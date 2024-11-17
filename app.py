@@ -14,6 +14,7 @@ st.set_page_config(page_title="Options Scanner", layout="wide")
 st.title("OPTIONS SCANNER")
 
 # Function to fetch current price
+@st.cache_data
 def get_current_price(ticker):
     try:
         url = f"{BASE_URL}/markets/quotes"
@@ -37,6 +38,7 @@ def get_current_price(ticker):
         return None
 
 # Function to fetch expiration dates
+@st.cache_data
 def get_expiration_dates(ticker):
     try:
         url = f"{BASE_URL}/markets/options/expirations"
@@ -51,6 +53,7 @@ def get_expiration_dates(ticker):
         return []
 
 # Function to fetch options data
+@st.cache_data
 def get_options_data(ticker, expiration_date):
     try:
         url = f"{BASE_URL}/markets/options/chains"
@@ -149,17 +152,17 @@ def comparative_chart(strikes_data):
     )
     return fig
 
-# Layout for inputs (Ticker and Expiration)
+# Sidebar for inputs
 st.sidebar.subheader("Inputs")
 ticker = st.sidebar.text_input("Enter Ticker", "AAPL").upper()
+
 if ticker:
     expiration_dates = get_expiration_dates(ticker)
     if expiration_dates:
         expiration_date = st.sidebar.selectbox("Select Expiration", expiration_dates)
-
-        # Update Button
+        price_data = get_current_price(ticker)
+        
         if st.sidebar.button("Refresh Data"):
-            price_data = get_current_price(ticker)
             if price_data:
                 st.sidebar.write(f"Last Price: ${price_data['last']:.2f}")
                 st.sidebar.write(f"High: ${price_data['high']:.2f}")
@@ -167,24 +170,22 @@ if ticker:
                 st.sidebar.write(f"Volume: {price_data['volume']}")
                 st.sidebar.write(f"IV: {price_data['iv']}")
 
-        # Charts and Calculations
         strikes_data = get_options_data(ticker, expiration_date)
+
+        # Display Max Pain
         if strikes_data:
-            st.subheader("Analytics Results")
+            st.subheader(f"Target Max Pain: ${calculate_max_pain(strikes_data)}")
 
-            # Gamma Exposure Chart
-            current_price = get_current_price(ticker)["last"]
-            max_pain = calculate_max_pain(strikes_data)
-            st.write(f"Target Max Pain: ${max_pain}")
+            # Tabs for charts
+            tab1, tab2 = st.tabs(["Gamma Exposure", "Call vs Put OI"])
+            with tab1:
+                current_price = price_data["last"]
+                gamma_chart = gamma_exposure_chart(strikes_data, current_price)
+                st.plotly_chart(gamma_chart, use_container_width=True)
 
-            st.write("### Gamma Exposure Chart")
-            gamma_chart = gamma_exposure_chart(strikes_data, current_price)
-            st.plotly_chart(gamma_chart, use_container_width=True)
-
-            # Call vs. Put Open Interest Comparative Chart
-            st.write("### Call vs. Put Open Interest Chart")
-            comparative_fig = comparative_chart(strikes_data)
-            st.plotly_chart(comparative_fig, use_container_width=True)
+            with tab2:
+                comparative_fig = comparative_chart(strikes_data)
+                st.plotly_chart(comparative_fig, use_container_width=True)
 
             # Export Data
             st.subheader("Export Data")
