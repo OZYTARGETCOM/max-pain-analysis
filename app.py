@@ -11,13 +11,7 @@ BASE_URL = "https://api.tradier.com/v1"
 
 # App global configuration
 st.set_page_config(page_title="Options Scanner", layout="wide")
-
-# Display the logo at the top
-st.image("ozy_target_logo.png", width=300)
 st.title("OPTIONS SCANNER")
-
-# Rest of your app code continues...
-
 
 # Function to fetch current price
 def get_current_price(ticker):
@@ -157,14 +151,14 @@ def comparative_chart(strikes_data):
 
 # Layout for inputs (Ticker and Expiration)
 st.sidebar.subheader("Inputs")
-ticker = st.sidebar.text_input(" Ticker", "SPY").upper()
+ticker = st.sidebar.text_input("Enter Ticker", "AAPL").upper()
 if ticker:
     expiration_dates = get_expiration_dates(ticker)
     if expiration_dates:
-        expiration_date = st.sidebar.selectbox(" Expiration", expiration_dates)
+        expiration_date = st.sidebar.selectbox("Select Expiration", expiration_dates)
 
         # Update Button
-        if st.sidebar.button("Update Data"):
+        if st.sidebar.button("Refresh Data"):
             price_data = get_current_price(ticker)
             if price_data:
                 st.sidebar.write(f"Last Price: ${price_data['last']:.2f}")
@@ -176,12 +170,12 @@ if ticker:
         # Charts and Calculations
         strikes_data = get_options_data(ticker, expiration_date)
         if strikes_data:
-            st.subheader("Analytics ")
+            st.subheader("Analytics Results")
 
             # Gamma Exposure Chart
             current_price = get_current_price(ticker)["last"]
             max_pain = calculate_max_pain(strikes_data)
-            st.write(f"TARGET MP: ${max_pain}")
+            st.write(f"Target Max Pain: ${max_pain}")
 
             st.write("### Gamma Exposure Chart")
             gamma_chart = gamma_exposure_chart(strikes_data, current_price)
