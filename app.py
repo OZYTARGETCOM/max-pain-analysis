@@ -37,12 +37,12 @@ def get_expiration_dates(ticker):
         st.error("Error fetching expiration dates")
         return []
 
-# Función para obtener datos de opciones
+# Función para obtener datos de opciones, incluyendo Delta y Theta
 @st.cache_data
 def get_options_data(ticker, expiration_date):
     url = f"{BASE_URL}/markets/options/chains"
     headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
-    params = {"symbol": ticker, "expiration": expiration_date}
+    params = {"symbol": ticker, "expiration": expiration_date, "greeks": "true"}  # Activar greeks
     response = requests.get(url, headers=headers, params=params)
     if response.status_code == 200:
         options = response.json().get("options", {}).get("option", [])
@@ -52,38 +52,73 @@ def get_options_data(ticker, expiration_date):
             option_type = option["option_type"]
             open_interest = option.get("open_interest", 0)
             volume = option.get("volume", 0)
+            delta = option.get("greeks", {}).get("delta", 0)  # Extraer Delta
+            theta = option.get("greeks", {}).get("theta", 0)  # Extraer Theta
             if strike not in strikes_data:
-                strikes_data[strike] = {"CALL": {"OI": 0, "VOLUME": 0}, "PUT": {"OI": 0, "VOLUME": 0}}
+                strikes_data[strike] = {"CALL": {"OI": 0, "VOLUME": 0, "DELTA": 0, "THETA": 0},
+                                        "PUT": {"OI": 0, "VOLUME": 0, "DELTA": 0, "THETA": 0}}
             if option_type == "call":
                 strikes_data[strike]["CALL"]["OI"] += open_interest
                 strikes_data[strike]["CALL"]["VOLUME"] += volume
+                strikes_data[strike]["CALL"]["DELTA"] = delta
+                strikes_data[strike]["CALL"]["THETA"] = theta
             elif option_type == "put":
                 strikes_data[strike]["PUT"]["OI"] += open_interest
                 strikes_data[strike]["PUT"]["VOLUME"] += volume
+                strikes_data[strike]["PUT"]["DELTA"] = delta
+                strikes_data[strike]["PUT"]["THETA"] = theta
         return strikes_data
     else:
         st.error("Error fetching options data")
         return {}
 
-# Cálculo de Max Pain
-def calculate_max_pain(strikes_data, metric):
+# Cálculo de Gamma Max Pain basado en OI combinado
+def calculate_gamma_max_pain(strikes_data):
     max_pain_values = {}
     for target_strike in sorted(strikes_data.keys()):
         total_pain = 0
         for strike, data in strikes_data.items():
             if strike < target_strike:
-                total_pain += data["CALL"][metric] * (target_strike - strike)
+                total_pain += (data["CALL"]["OI"] + data["PUT"]["OI"]) * (target_strike - strike)
             elif strike > target_strike:
-                total_pain += data["PUT"][metric] * (strike - target_strike)
+                total_pain += (data["CALL"]["OI"] + data["PUT"]["OI"]) * (strike - target_strike)
         max_pain_values[target_strike] = total_pain
     return min(max_pain_values, key=max_pain_values.get)
 
-# Función para obtener los top N strikes por métrica
-def get_top_strikes(strikes_data, metric, option_type, top_n=4):
+# Cálculo de Max Pain basado en Volume
+def calculate_max_pain_volume(strikes_data):
+    max_pain_values = {}
+    for target_strike in sorted(strikes_data.keys()):
+        total_pain = 0
+        for strike, data in strikes_data.items():
+            if strike < target_strike:
+                total_pain += (data["CALL"]["VOLUME"] + data["PUT"]["VOLUME"]) * (target_strike - strike)
+            elif strike > target_strike:
+                total_pain += (data["CALL"]["VOLUME"] + data["PUT"]["VOLUME"]) * (strike - target_strike)
+        max_pain_values[target_strike] = total_pain
+    return min(max_pain_values, key=max_pain_values.get)
+
+# Cálculo de Max Pain basado en Open Interest individual
+def calculate_max_pain_oi(strikes_data):
+    max_pain_values = {}
+    for target_strike in sorted(strikes_data.keys()):
+        total_pain = 0
+        for strike, data in strikes_data.items():
+            if strike < target_strike:
+                total_pain += data["CALL"]["OI"] * (target_strike - strike)
+            elif strike > target_strike:
+                total_pain += data["PUT"]["OI"] * (strike - target_strike)
+        max_pain_values[target_strike] = total_pain
+    return min(max_pain_values, key=max_pain_values.get)
+
+# Función para obtener los top N strikes por métrica, incluyendo Delta y Theta
+def get_top_strikes_with_greeks(strikes_data, metric, option_type, top_n=4):
     strikes = []
     for strike, data in strikes_data.items():
         value = data[option_type][metric]
-        strikes.append({"Strike": strike, metric: value})
+        delta = data[option_type].get("DELTA", 0)  # Delta por strike
+        theta = data[option_type].get("THETA", 0)  # Theta por strike
+        strikes.append({"Strike": strike, metric: value, "Delta": delta, "Theta": theta})
     df = pd.DataFrame(strikes).sort_values(by=metric, ascending=False).head(top_n)
     return df
 
@@ -146,34 +181,34 @@ if ticker:
 
         # Sección 2: Métricas Clave
         if strikes_data:
-            gamma_max_pain = calculate_max_pain(strikes_data, "OI")
-            volume_max_pain = calculate_max_pain(strikes_data, "VOLUME")
-            oi_max_pain = calculate_max_pain(strikes_data, "OI")
+            gamma_max_pain = calculate_gamma_max_pain(strikes_data)  # Gamma Max Pain basado en OI combinado
+            volume_max_pain = calculate_max_pain_volume(strikes_data)  # Max Pain (Volume)
+            oi_max_pain = calculate_max_pain_oi(strikes_data)  # Max Pain (OI)
 
             with st.expander("📊 Key Metrics"):
-                st.write(f"**Gamma Max Pain:** ${gamma_max_pain}")
+                st.write(f"**Gamma Max Pain (OI Combined):** ${gamma_max_pain}")
                 st.write(f"**Max Pain (Volume):** ${volume_max_pain}")
                 st.write(f"**Max Pain (OI):** ${oi_max_pain}")
 
-            # Sección 3: Top Strikes
+            # Sección 3: Top Strikes con Delta y Theta
             with st.expander("📊 Top Strikes by Metrics"):
                 col1, col2 = st.columns(2)
                 with col1:
                     st.markdown("#### Top 4 CALL Strikes by Open Interest")
-                    top_call_oi = get_top_strikes(strikes_data, "OI", "CALL")
+                    top_call_oi = get_top_strikes_with_greeks(strikes_data, "OI", "CALL")
                     st.dataframe(top_call_oi)
 
                     st.markdown("#### Top 4 CALL Strikes by Volume")
-                    top_call_volume = get_top_strikes(strikes_data, "VOLUME", "CALL")
+                    top_call_volume = get_top_strikes_with_greeks(strikes_data, "VOLUME", "CALL")
                     st.dataframe(top_call_volume)
 
                 with col2:
                     st.markdown("#### Top 4 PUT Strikes by Open Interest")
-                    top_put_oi = get_top_strikes(strikes_data, "OI", "PUT")
+                    top_put_oi = get_top_strikes_with_greeks(strikes_data, "OI", "PUT")
                     st.dataframe(top_put_oi)
 
                     st.markdown("#### Top 4 PUT Strikes by Volume")
-                    top_put_volume = get_top_strikes(strikes_data, "VOLUME", "PUT")
+                    top_put_volume = get_top_strikes_with_greeks(strikes_data, "VOLUME", "PUT")
                     st.dataframe(top_put_volume)
 
             # Sección 4: Gráfico de Gamma Exposure
