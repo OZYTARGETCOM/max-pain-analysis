@@ -1,3 +1,4 @@
+
 import streamlit as st
 import requests
 import plotly.graph_objects as go
@@ -72,42 +73,16 @@ def get_options_data(ticker, expiration_date):
         st.error("Error fetching options data")
         return {}
 
-# Cálculo de Gamma Max Pain basado en OI combinado
-def calculate_gamma_max_pain(strikes_data):
+# Cálculo de Max Pain
+def calculate_max_pain(strikes_data, metric):
     max_pain_values = {}
     for target_strike in sorted(strikes_data.keys()):
         total_pain = 0
         for strike, data in strikes_data.items():
             if strike < target_strike:
-                total_pain += (data["CALL"]["OI"] + data["PUT"]["OI"]) * (target_strike - strike)
+                total_pain += data["CALL"][metric] * (target_strike - strike)
             elif strike > target_strike:
-                total_pain += (data["CALL"]["OI"] + data["PUT"]["OI"]) * (strike - target_strike)
-        max_pain_values[target_strike] = total_pain
-    return min(max_pain_values, key=max_pain_values.get)
-
-# Cálculo de Max Pain basado en Volume
-def calculate_max_pain_volume(strikes_data):
-    max_pain_values = {}
-    for target_strike in sorted(strikes_data.keys()):
-        total_pain = 0
-        for strike, data in strikes_data.items():
-            if strike < target_strike:
-                total_pain += (data["CALL"]["VOLUME"] + data["PUT"]["VOLUME"]) * (target_strike - strike)
-            elif strike > target_strike:
-                total_pain += (data["CALL"]["VOLUME"] + data["PUT"]["VOLUME"]) * (strike - target_strike)
-        max_pain_values[target_strike] = total_pain
-    return min(max_pain_values, key=max_pain_values.get)
-
-# Cálculo de Max Pain basado en Open Interest individual
-def calculate_max_pain_oi(strikes_data):
-    max_pain_values = {}
-    for target_strike in sorted(strikes_data.keys()):
-        total_pain = 0
-        for strike, data in strikes_data.items():
-            if strike < target_strike:
-                total_pain += data["CALL"]["OI"] * (target_strike - strike)
-            elif strike > target_strike:
-                total_pain += data["PUT"]["OI"] * (strike - target_strike)
+                total_pain += data["PUT"][metric] * (strike - target_strike)
         max_pain_values[target_strike] = total_pain
     return min(max_pain_values, key=max_pain_values.get)
 
@@ -181,12 +156,12 @@ if ticker:
 
         # Sección 2: Métricas Clave
         if strikes_data:
-            gamma_max_pain = calculate_gamma_max_pain(strikes_data)  # Gamma Max Pain basado en OI combinado
-            volume_max_pain = calculate_max_pain_volume(strikes_data)  # Max Pain (Volume)
-            oi_max_pain = calculate_max_pain_oi(strikes_data)  # Max Pain (OI)
+            gamma_max_pain = calculate_max_pain(strikes_data, "OI")
+            volume_max_pain = calculate_max_pain(strikes_data, "VOLUME")
+            oi_max_pain = calculate_max_pain(strikes_data, "OI")
 
             with st.expander("📊 Key Metrics"):
-                st.write(f"**Gamma Max Pain (OI Combined):** ${gamma_max_pain}")
+                st.write(f"**Gamma Max Pain:** ${gamma_max_pain}")
                 st.write(f"**Max Pain (Volume):** ${volume_max_pain}")
                 st.write(f"**Max Pain (OI):** ${oi_max_pain}")
 
