@@ -216,3 +216,4 @@ if ticker:
             with st.expander("📉 Gamma Exposure Chart"):
                 gamma_chart = gamma_exposure_chart(strikes_data, current_price)
                 st.plotly_chart(gamma_chart, use_container_width=True)
+
