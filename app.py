@@ -3,16 +3,44 @@ import streamlit as st
 import requests
 import plotly.graph_objects as go
 import pandas as pd
+import time
+
 
 # Configuración de la API Tradier
 API_KEY = "U1iAJk1HhOCfHxULqzo2ywM2jUAX"
 BASE_URL = "https://api.tradier.com/v1"
 
 # Configuración de la página
-st.set_page_config(page_title="Advanced Options Analytics", layout="wide")
-st.title("Advanced Options Analytics - Gamma and Max Pain")
+st.set_page_config(page_title="Ozy Target", layout="wide")
+st.title("Advanced Tools")
+  
+UPDATE_INTERVAL = 15
+# Función ajustada para calcular el porcentaje de volumen entre CALL y PUT
+def calculate_ticker_call_put_percentage(data):
+    if not data or len(data) == 0:
+        return {"Calls (%)": 0, "Puts (%)": 0}
 
-# Función para obtener datos de precio
+    total_calls = 0
+    total_puts = 0
+
+    # Navegar por las claves del strike
+    for strike, strike_data in data.items():
+        if "CALL" in strike_data and "VOLUME" in strike_data["CALL"]:
+            total_calls += strike_data["CALL"]["VOLUME"]
+        if "PUT" in strike_data and "VOLUME" in strike_data["PUT"]:
+            total_puts += strike_data["PUT"]["VOLUME"]
+
+    total_volume = total_calls + total_puts
+
+    if total_volume == 0:
+        return {"Calls (%)": 0, "Puts (%)": 0}
+
+    return {
+        "Calls (%)": (total_calls / total_volume) * 100,
+        "Puts (%)": (total_puts / total_volume) * 100,
+    }
+
+
 @st.cache_data
 def get_price_data(ticker):
     url = f"{BASE_URL}/markets/quotes"
@@ -73,18 +101,30 @@ def get_options_data(ticker, expiration_date):
         st.error("Error fetching options data")
         return {}
 
-# Cálculo de Max Pain
-def calculate_max_pain(strikes_data, metric):
+# Función mejorada para calcular Max Pain
+def calculate_advanced_max_pain(strikes_data, metric, time_to_expiration=1):
     max_pain_values = {}
+    total_open_interest = sum(
+        data["CALL"][metric] + data["PUT"][metric] for data in strikes_data.values()
+    )
+
     for target_strike in sorted(strikes_data.keys()):
         total_pain = 0
         for strike, data in strikes_data.items():
-            if strike < target_strike:
-                total_pain += data["CALL"][metric] * (target_strike - strike)
-            elif strike > target_strike:
-                total_pain += data["PUT"][metric] * (strike - target_strike)
-        max_pain_values[target_strike] = total_pain
+            distance = abs(target_strike - strike)
+            time_weight = 1 / (time_to_expiration + 1)  # Peso por tiempo a expiración
+            delta_weight = abs(data["CALL"].get("DELTA", 0.5)) + abs(data["PUT"].get("DELTA", 0.5))  # Ponderación por delta
+            weight = (1 / (distance + 1)) * time_weight * delta_weight
+
+            call_pain = data["CALL"][metric] * (target_strike - strike) * weight
+            put_pain = data["PUT"][metric] * (strike - target_strike) * weight
+            total_pain += call_pain + put_pain
+
+        max_pain_values[target_strike] = total_pain / total_open_interest if total_open_interest else total_pain
+
     return min(max_pain_values, key=max_pain_values.get)
+
+
 
 # Función para obtener los top N strikes por métrica, incluyendo Delta y Theta
 def get_top_strikes_with_greeks(strikes_data, metric, option_type, top_n=4):
@@ -133,62 +173,200 @@ def gamma_exposure_chart(strikes_data, current_price):
         template="plotly_white"
     )
     return fig
+    
+@st.cache_data
+def scan_top_5_precise_moving_stocks():
+    symbols = [
+        "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "NFLX",
+        "AMD", "BA", "ORCL", "INTC", "PYPL", "CSCO", "ADBE", "AVGO", "CRM",
+        "TXN", "QCOM", "INTU", "SHOP", "AMAT", "AMD", "V", "MA", "JNJ", "PFE",
+        "MRNA", "WMT", "TGT", "COST", "HD", "LOW", "DIS", "NKE", "SBUX", "PEP",
+        "KO", "XOM", "CVX", "BP", "COP", "SPY", "QQQ", "DIA", "UNH", "ABBV",
+        "TMO", "LIN", "HON", "IWM", "BITX", "ENPH", "YINN", "NEE", "SMCI",
+        "BAC", "GGAL", "MARA", "COIN", "ROOT", "NU"
+    ]
+
+    url = f"{BASE_URL}/markets/quotes"
+    headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
+    params = {"symbols": ",".join(symbols)}
+    response = requests.get(url, headers=headers, params=params)
+
+    if response.status_code == 200:
+        quotes = response.json().get("quotes", {}).get("quote", [])
+        if isinstance(quotes, dict):  # Si Tradier devuelve un único resultado
+            quotes = [quotes]
+
+        stocks = []
+        for stock in quotes:
+            symbol = stock.get("symbol", "")
+            last_price = stock.get("last", 0)
+            change_percent = abs(stock.get("change_percentage", 0))
+            volume = stock.get("volume", 0)
+            avg_volume = stock.get("average_volume", 1)
+            rel_volume = volume / avg_volume if avg_volume > 0 else 0
+            high = stock.get("high", last_price)
+            low = stock.get("low", last_price)
+            spread_percent = ((high - low) / last_price) * 100 if last_price > 0 else 0
+            iv = stock.get("volatility", 0)
+
+            if iv == 0:
+                projected_move = (rel_volume * 0.4) + (change_percent * 0.4) + (spread_percent * 0.2)
+            else:
+                projected_move = (rel_volume * 0.25) + (change_percent * 0.25) + (iv * 0.3) + (spread_percent * 0.2)
+
+            stocks.append({
+                "Symbol": symbol,
+                "Price": last_price,
+                "Change (%)": change_percent,
+                "Volume": volume,
+                "Relative Volume": rel_volume,
+                "Spread (%)": spread_percent,
+                "IV": iv,
+                "Projected Move (%)": projected_move
+            })
+
+        return pd.DataFrame(stocks).sort_values(by="Projected Move (%)", ascending=False).head(5)
+    else:
+        st.error(f"Error fetching market data: {response.text}")
+        return pd.DataFrame()
+
+# Función para graficar el movimiento proyectado
+def projected_movement_chart(stocks_df):
+    fig = go.Figure(data=[
+        go.Bar(name="Projected Move (%)", x=stocks_df["Symbol"], y=stocks_df["Projected Move (%)"])
+    ])
+    fig.update_layout(
+        title="Top 5 Projected ",
+        xaxis_title="Symbols",
+        yaxis_title="Projected Movement (%)",
+        template="plotly_white"
+    )
+    return fig
+
+# Escaneo de las Magníficas 50
+with st.expander("Top  Moving Stocks"):
+    st.subheader("")
+    top_5_stocks = scan_top_5_precise_moving_stocks()
+    if not top_5_stocks.empty:
+        st.dataframe(top_5_stocks)
+        st.plotly_chart(projected_movement_chart(top_5_stocks), use_container_width=True)
+    else:
+        st.write("No data available for the selected stocks.")
+
+
+        # Función para crear un gráfico de pastel para visualizar el porcentaje
+def ticker_call_put_pie_chart(percentages):
+    labels = ['Calls', 'Puts']
+    values = [percentages['Calls (%)'], percentages['Puts (%)']]
+
+    fig = go.Figure(data=[go.Pie(labels=labels, values=values, hole=.3)])
+    fig.update_layout(
+        title="Call vs Put Volume Percentage for Selected Ticker",
+        template="plotly_white"
+    )
+    return fig
+
+
+
+
+
+
+
+
+
+
+
 
 # Sidebar para entradas
 st.sidebar.subheader("Inputs")
-ticker = st.sidebar.text_input("Enter Ticker", value="AAPL").upper()
+ticker = st.sidebar.text_input("Ticker", value="SPY").upper()
+# Contenedores dinámicos
+price_container = st.empty()
+metrics_container = st.empty()
+gamma_chart_container = st.empty()
 
 # Sección 1: Información del Precio Actual
+
 if ticker:
     expiration_dates = get_expiration_dates(ticker)
     if expiration_dates:
-        expiration_date = st.sidebar.selectbox("Select Expiration", expiration_dates)
+        expiration_date = st.sidebar.selectbox("Expiration", expiration_dates)
         price_data = get_price_data(ticker)
 
         if price_data:
-            with st.expander("📈 Current Price"):
+            with st.expander("Current "):
                 st.write(f"**Last Price:** ${price_data['last']}")
                 st.write(f"**High:** ${price_data['high']}")
                 st.write(f"**Low:** ${price_data['low']}")
                 st.write(f"**Volume:** {price_data['volume']}")
 
         strikes_data = get_options_data(ticker, expiration_date)
-
+      
         # Sección 2: Métricas Clave
         if strikes_data:
-            gamma_max_pain = calculate_max_pain(strikes_data, "OI")
-            volume_max_pain = calculate_max_pain(strikes_data, "VOLUME")
-            oi_max_pain = calculate_max_pain(strikes_data, "OI")
+            time_to_expiration = max(1, (pd.to_datetime(expiration_date) - pd.Timestamp.today()).days)
 
-            with st.expander("📊 Key Metrics"):
-                st.write(f"**Gamma Max Pain:** ${gamma_max_pain}")
-                st.write(f"**Max Pain (Volume):** ${volume_max_pain}")
-                st.write(f"**Max Pain (OI):** ${oi_max_pain}")
+            gamma_max_pain = calculate_advanced_max_pain(strikes_data, "OI", time_to_expiration=5)
+            volume_max_pain = calculate_advanced_max_pain(strikes_data, "VOLUME", time_to_expiration=5)
+
+
+            with st.expander("Target Expiration"):
+                st.write(f"**Target -:** ${gamma_max_pain}")
+                st.write(f"**Target:** ${volume_max_pain}")
+                
 
             # Sección 3: Top Strikes con Delta y Theta
-            with st.expander("📊 Top Strikes by Metrics"):
+            with st.expander("Options Strikes"):
                 col1, col2 = st.columns(2)
                 with col1:
-                    st.markdown("#### Top 4 CALL Strikes by Open Interest")
+                    st.markdown("####  4 CALL Interest ")
                     top_call_oi = get_top_strikes_with_greeks(strikes_data, "OI", "CALL")
                     st.dataframe(top_call_oi)
 
-                    st.markdown("#### Top 4 CALL Strikes by Volume")
+                    st.markdown("####  CALL Volume ")
                     top_call_volume = get_top_strikes_with_greeks(strikes_data, "VOLUME", "CALL")
                     st.dataframe(top_call_volume)
 
                 with col2:
-                    st.markdown("#### Top 4 PUT Strikes by Open Interest")
+                    st.markdown("#### PUT  Interest")
                     top_put_oi = get_top_strikes_with_greeks(strikes_data, "OI", "PUT")
                     st.dataframe(top_put_oi)
 
-                    st.markdown("#### Top 4 PUT Strikes by Volume")
+                    st.markdown("#### PUT  Volume")
                     top_put_volume = get_top_strikes_with_greeks(strikes_data, "VOLUME", "PUT")
                     st.dataframe(top_put_volume)
 
             # Sección 4: Gráfico de Gamma Exposure
             current_price = price_data["last"]
-            with st.expander("📉 Gamma Exposure Chart"):
+            with st.expander(" Gamma  Chart"):
                 gamma_chart = gamma_exposure_chart(strikes_data, current_price)
                 st.plotly_chart(gamma_chart, use_container_width=True)
+                time.sleep(UPDATE_INTERVAL)
+                # Obtener datos del mercado
+
+
+                # Sección de desglose para calcular y mostrar Call/Put % del ticker seleccionado
+with st.expander(" Call / Put %"):
+    st.subheader("Call vs Put Volume")
+
+    if ticker and expiration_date:
+        # Obtener datos de opciones para el ticker
+        ticker_options = get_options_data(ticker, expiration_date)
+
+        # Mostrar datos de depuración opcionalmente
+        if st.checkbox("Raw Options Data "):
+            st.json(ticker_options)  # Muestra los datos en formato legible solo si está activado
+
+        if ticker_options:
+            # Calcular porcentajes
+            percentages = calculate_ticker_call_put_percentage(ticker_options)
+
+            # Mostrar datos y gráfico
+            st.write(f"**Calls (%):** {percentages['Calls (%)']:.2f}%")
+            st.write(f"**Puts (%):** {percentages['Puts (%)']:.2f}%")
+            st.plotly_chart(ticker_call_put_pie_chart(percentages), use_container_width=True)
+        else:
+            st.warning("No options data available for the selected ticker and expiration date.")
+    else:
+        st.warning("Please enter a valid ticker and expiration date.")
 
