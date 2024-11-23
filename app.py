@@ -1,4 +1,3 @@
-
 import streamlit as st
 import requests
 import plotly.graph_objects as go
@@ -15,6 +14,54 @@ st.set_page_config(page_title="Ozy Target", layout="wide")
 st.title("Advanced Tools")
   
 UPDATE_INTERVAL = 15
+
+
+
+
+
+@st.cache_data
+def find_best_contracts(strikes_data):
+    best_contracts = []
+    if not strikes_data:  # Verifica si está vacío
+        return pd.DataFrame(columns=["Type", "Strike", "Volume", "OI", "Activity (%)"])
+    
+    for strike, data in strikes_data.items():
+        call_volume = data["CALL"].get("VOLUME", 0)
+        put_volume = data["PUT"].get("VOLUME", 0)
+        call_oi = data["CALL"].get("OI", 0)
+        put_oi = data["PUT"].get("OI", 0)
+
+        # Calcular actividad inusual
+        call_activity = (call_volume / call_oi * 100) if call_oi > 0 else 0
+        put_activity = (put_volume / put_oi * 100) if put_oi > 0 else 0
+
+        # Agregar contratos relevantes
+        if call_activity > 50:
+            best_contracts.append({
+                "Type": "CALL",
+                "Strike": strike,
+                "Volume": call_volume,
+                "OI": call_oi,
+                "Activity (%)": call_activity
+            })
+        if put_activity > 50:
+            best_contracts.append({
+                "Type": "PUT",
+                "Strike": strike,
+                "Volume": put_volume,
+                "OI": put_oi,
+                "Activity (%)": put_activity
+            })
+
+    return pd.DataFrame(best_contracts) if best_contracts else pd.DataFrame(columns=["Type", "Strike", "Volume", "OI", "Activity (%)"])
+
+
+
+
+
+
+
+
 # Función ajustada para calcular el porcentaje de volumen entre CALL y PUT
 def calculate_ticker_call_put_percentage(data):
     if not data or len(data) == 0:
@@ -23,7 +70,7 @@ def calculate_ticker_call_put_percentage(data):
     total_calls = 0
     total_puts = 0
 
-    # Navegar por las claves del strike
+    # Navegar por las claves del strike 
     for strike, strike_data in data.items():
         if "CALL" in strike_data and "VOLUME" in strike_data["CALL"]:
             total_calls += strike_data["CALL"]["VOLUME"]
@@ -100,6 +147,81 @@ def get_options_data(ticker, expiration_date):
     else:
         st.error("Error fetching options data")
         return {}
+
+
+
+def execute_trade(api_key, contract_type, strike, volume):
+    url = f"https://api.tradier.com/v1/accounts/<account_id>/orders"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json"
+    }
+    payload = {
+        "class": "option",
+        "symbol": ticker,
+        "option_type": contract_type.lower(),
+        "strike": strike,
+        "quantity": volume,
+        "price": "market",
+        "side": "buy",  # or "sell"
+        "duration": "day",
+        "type": "market"
+    }
+    response = requests.post(url, headers=headers, json=payload)
+    if response.status_code == 201:
+        st.success(f"Trade executed: {contract_type} at ${strike}")
+    else:
+        st.error(f"Trade failed: {response.json().get('message')}")
+
+
+def plot_contract_activity(contracts_df):
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=contracts_df["Strike"],
+        y=contracts_df["Volume"],
+        name="Volume",
+        marker_color="blue"
+    ))
+    fig.add_trace(go.Bar(
+        x=contracts_df["Strike"],
+        y=contracts_df["OI"],
+        name="Open Interest",
+        marker_color="orange"
+    ))
+    fig.update_layout(
+        title="Volume vs Open Interest by Strike",
+        xaxis_title="Strike Price",
+        yaxis_title="Contracts",
+        barmode="group",
+        template="plotly_white"
+    )
+    return fig
+
+def plot_contract_activity(best_contracts):
+    if best_contracts.empty:
+        return go.Figure()
+    
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=best_contracts["Strike"],
+        y=best_contracts["Activity (%)"],
+        name="Activity (%)",
+        marker_color="blue"
+    ))
+    fig.update_layout(
+        title="Volume vs Open Interest Activity",
+        xaxis_title="Strike Price",
+        yaxis_title="Activity (%)",
+        template="plotly_white"
+    )
+    return fig
+
+
+
+
+
+
+
 
 # Función mejorada para calcular Max Pain
 def calculate_advanced_max_pain(strikes_data, metric, time_to_expiration=1):
@@ -370,3 +492,15 @@ with st.expander(" Call / Put %"):
     else:
         st.warning("Please enter a valid ticker and expiration date.")
 
+ 
+with st.expander("Best Options Data"):
+    if strikes_data:
+        best_contracts = find_best_contracts(strikes_data)
+        if not best_contracts.empty:
+            st.write("Contracts MM Data:")
+            st.dataframe(best_contracts)  # Muestra la tabla antes de graficar
+            st.plotly_chart(plot_contract_activity(best_contracts), use_container_width=True)
+        else:
+            st.warning("No contract data available to display.")
+    else:
+        st.warning("No options data available for this ticker.")
