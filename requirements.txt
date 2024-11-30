@@ -1,4 +1,8 @@
-streamlit==1.40.1
-requests==2.32.3
-plotly==5.24.1
-pandas==2.2.3
+streamlit==1.25.0  # O la última versión compatible
+pandas==2.1.1
+requests==2.31.0
+plotly==5.16.1
+numpy
+yfinance
+bcrypt
+streamlit-authenticator
