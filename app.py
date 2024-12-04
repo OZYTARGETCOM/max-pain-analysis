@@ -11,6 +11,9 @@ import warnings
 import bcrypt
 import streamlit_authenticator as stauth
 import csv
+from bs4 import BeautifulSoup
+import requests
+from datetime import datetime, timedelta
 
 # Configuración inicial de la página
 st.set_page_config(page_title="SCANNER OPTIONS", layout="wide")
@@ -19,141 +22,14 @@ st.set_page_config(page_title="SCANNER OPTIONS", layout="wide")
 
 
 
-
-# Función para cargar usuarios desde un archivo CSV
-def load_users():
-    users = {}
-    try:
-        with open("users.csv", mode="r") as file:
-            reader = csv.reader(file)
-            for row in reader:
-                email, hashed_password = row
-                users[email] = {"password": hashed_password}
-    except FileNotFoundError:
-        # Crear el archivo si no existe
-        with open("users.csv", mode="w", newline="") as file:
-            pass
-    return users
-
-# Función para registrar un usuario
-def register_user(email, password):
-    try:
-        hashed_password = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-        with open("users.csv", mode="a", newline="") as file:
-            writer = csv.writer(file)
-            writer.writerow([email, hashed_password])
-        return "Registro exitoso"
-    except Exception as e:
-        return f"Error al registrar el usuario: {e}"
-
-# Función para autenticar al usuario
-def authenticate_user(email, password):
-    if email in users:
-        hashed_password = users[email]["password"]
-        return bcrypt.checkpw(password.encode("utf-8"), hashed_password.encode("utf-8"))
-    return False
-
-# Cargar usuarios al iniciar la app
-users = load_users()
-
-# Inicializar el estado de sesión si no existe
-if "authenticated" not in st.session_state:
-    st.session_state["authenticated"] = False
-
-if "user_email" not in st.session_state:
-    st.session_state["user_email"] = None
-
-# Función para recargar la página
-def reload_page():
-    st.session_state["reload"] = True
-
-# Mostrar contenido basado en autenticación
-if not st.session_state["authenticated"]:
-    # Mostrar opciones de registro e inicio de sesión en la pantalla principal
-    st.header("🔑 Ingreso y Registro")
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.subheader("Registro")
-        email_register = st.text_input("Correo electrónico", key="register_email")
-        password_register = st.text_input("Contraseña", type="password", key="register_password")
-        if st.button("Registrar"):
-            if email_register and password_register:
-                if email_register in users:
-                    st.error("El correo ya está registrado.")
-                else:
-                    message = register_user(email_register, password_register)
-                    users = load_users()  # Recargar usuarios
-                    st.success(message)
-            else:
-                st.error("Por favor, completa ambos campos.")
-
-    with col2:
-        st.subheader("Inicio de Sesión")
-        login_email = st.text_input("Correo electrónico", key="login_email")
-        login_password = st.text_input("Contraseña", type="password", key="login_password")
-        if st.button("Iniciar Sesión"):
-            if login_email and login_password:
-                if authenticate_user(login_email, login_password):
-                    st.session_state["authenticated"] = True
-                    st.session_state["user_email"] = login_email
-                    reload_page()  # Recargar página
-                else:
-                    st.error("Credenciales incorrectas.")
-            else:
-                st.error("Por favor, completa ambos campos.")
-else:
-    # Si está autenticado, mostrar bienvenida en la pantalla principal
-    st.success(f"Bienvenido, {st.session_state['user_email']}!")
-
-    # Botón para cerrar sesión en la pantalla principal
-    if st.button("Cerrar Sesión"):
-        st.session_state["authenticated"] = False
-        st.session_state["user_email"] = None
-        reload_page()  # Recargar página
-
-# Proteger el contenido principal
-if not st.session_state["authenticated"]:
-    st.warning("Por favor, inicia sesión para acceder a las herramientas.")
-    st.stop()
-
-    
-#BUENOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-#>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>end seguridad    
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # Configuración de la API Tradier
-API_KEY = "U1iAJk1HhOCfHxULqzo2ywM2jUAX"
+API_KEY = "wMG8GrrZMBFeZMCWJTqTzZns7B4w"
 BASE_URL = "https://api.tradier.com/v1"
+# Configuración de la API de Noticias
+NEWS_API_KEY = "dc681719f9854b148abf6fc1c94fdb33"  # API KEY para NewsAPI
+NEWS_BASE_URL = "https://newsapi.org/v2/everything"  # Endpoint de NewsAPI
+
+
 
 # Función para obtener datos de opciones
 @st.cache_data
@@ -237,24 +113,75 @@ def select_best_contracts(options_data, current_price):
             best_contracts.append(option)
 
     # Ordenar por puntuación y seleccionar los top 6
-    best_contracts = sorted(best_contracts, key=lambda x: x["score"], reverse=True)[:6]
+    best_contracts = sorted(best_contracts, key=lambda x: x["score"], reverse=True)[:8]
     return best_contracts
 
 
 import plotly.graph_objects as go
 
-def gamma_exposure_chart(strikes_data, current_price):
-    # Ordenar los strikes
+# Función para obtener datos de opciones
+@st.cache_data
+def get_options_data(ticker, expiration_date):
+    url = f"{BASE_URL}/markets/options/chains"
+    headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
+    params = {"symbol": ticker, "expiration": expiration_date, "greeks": "true"}  # Activar Greeks
+    response = requests.get(url, headers=headers, params=params)
+
+    if response.status_code == 200:
+        return response.json().get("options", {}).get("option", [])
+    else:
+        st.error("Error fetching options data.")
+        return []
+
+# Función para obtener el precio actual
+@st.cache_data
+def get_current_price(ticker):
+    url = f"{BASE_URL}/markets/quotes"
+    headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
+    params = {"symbols": ticker}
+    response = requests.get(url, headers=headers, params=params)
+
+    if response.status_code == 200:
+        quote = response.json().get("quotes", {}).get("quote", {})
+        return quote.get("last", 0)
+    else:
+        st.error("Error fetching current price.")
+        return 0
+
+# Función para obtener fechas de expiración
+@st.cache_data
+def get_expiration_dates(ticker):
+    url = f"{BASE_URL}/markets/options/expirations"
+    headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
+    params = {"symbol": ticker}
+    response = requests.get(url, headers=headers, params=params)
+
+    if response.status_code == 200:
+        return response.json().get("expirations", {}).get("date", [])
+    else:
+        st.error("Error fetching expiration dates.")
+        return []
+
+# Función para calcular Max Pain (ajustado)
+def calculate_adjusted_max_pain(options_data):
+    strikes = {}
+    for option in options_data:
+        strike = option["strike"]
+        open_interest = option["open_interest"] or 0
+        if strike not in strikes:
+            strikes[strike] = 0
+        strikes[strike] += open_interest
+    return max(strikes, key=strikes.get)
+
+# Función para calcular Gamma Exposure y graficarlo
+def gamma_exposure_chart(strikes_data, current_price, max_pain):
     strikes = sorted(strikes_data.keys())
 
-    # Extraer datos de Gamma para Calls y Puts
     gamma_calls = [strikes_data[s]["CALL"]["OI"] * strikes_data[s]["CALL"]["Gamma"] for s in strikes]
     gamma_puts = [strikes_data[s]["PUT"]["OI"] * strikes_data[s]["PUT"]["Gamma"] for s in strikes]
 
-    # Crear la figura
     fig = go.Figure()
 
-    # Barras de Gamma Exposure para Calls
     fig.add_trace(go.Bar(
         x=strikes,
         y=gamma_calls,
@@ -262,7 +189,6 @@ def gamma_exposure_chart(strikes_data, current_price):
         marker_color="blue"
     ))
 
-    # Barras de Gamma Exposure para Puts (invertido)
     fig.add_trace(go.Bar(
         x=strikes,
         y=[-g for g in gamma_puts],
@@ -270,7 +196,6 @@ def gamma_exposure_chart(strikes_data, current_price):
         marker_color="red"
     ))
 
-    # Añadir línea para el precio actual
     fig.add_shape(
         type="line",
         x0=current_price,
@@ -280,7 +205,15 @@ def gamma_exposure_chart(strikes_data, current_price):
         line=dict(color="orange", width=2, dash="dot")
     )
 
-    # Añadir anotación para el precio actual
+    fig.add_shape(
+        type="line",
+        x0=max_pain,
+        x1=max_pain,
+        y0=min(-max(gamma_puts), min(gamma_calls)) * 1.1,
+        y1=max(max(gamma_calls), -min(gamma_puts)) * 1.1,
+        line=dict(color="green", width=2, dash="dash")
+    )
+
     fig.add_annotation(
         x=current_price,
         y=max(max(gamma_calls), -min(gamma_puts)) * 0.9,
@@ -291,14 +224,58 @@ def gamma_exposure_chart(strikes_data, current_price):
         font=dict(color="orange", size=12)
     )
 
-    # Actualizar diseño del gráfico
+    fig.add_annotation(
+        x=max_pain,
+        y=max(max(gamma_calls), -min(gamma_puts)) * 0.8,
+        text=f"Max Pain: ${max_pain:.2f}",
+        showarrow=True,
+        arrowhead=2,
+        arrowcolor="green",
+        font=dict(color="green", size=12)
+    )
+
     fig.update_layout(
-        title="Gamma Exposure (Calls vs Puts)",
+        title="Gamma Exposure (Calls vs Puts) Target",
         xaxis_title="Strike Price",
         yaxis_title="Gamma Exposure",
         barmode="relative",
         template="plotly_white",
         legend=dict(title="Option Type")
+    )
+
+    return fig
+
+# Función para crear el heatmap
+def create_heatmap(processed_data):
+    strikes = sorted(processed_data.keys())
+
+    oi = [processed_data[s]["CALL"]["OI"] + processed_data[s]["PUT"]["OI"] for s in strikes]
+    gamma = [processed_data[s]["CALL"]["Gamma"] + processed_data[s]["PUT"]["Gamma"] for s in strikes]
+    volume = [processed_data[s]["CALL"]["OI"] * processed_data[s]["CALL"]["Gamma"] +
+              processed_data[s]["PUT"]["OI"] * processed_data[s]["PUT"]["Gamma"] for s in strikes]
+
+    # Normalización de las métricas
+    data = pd.DataFrame({
+        'OI': oi,
+        'Gamma': gamma,
+        'Volume': volume
+    })
+
+    data_normalized = data.apply(lambda x: (x - x.min()) / (x.max() - x.min()))
+
+    fig = go.Figure(data=go.Heatmap(
+        z=data_normalized.T.values,
+        x=strikes,
+        y=data_normalized.columns,
+        colorscale='Viridis',
+        colorbar=dict(title='Normalized Value'),
+    ))
+
+    fig.update_layout(
+        title="Supports & Resistences",
+        xaxis_title="Strike Price",
+        yaxis_title="Métrica",
+        template="plotly_dark"
     )
 
     return fig
@@ -383,7 +360,7 @@ def risk_return_chart_auto(strike_price, premium_paid, current_price, contract_t
 
     # Configurar el diseño del gráfico
     fig.update_layout(
-        title=f"Risk/Return Chart for {contract_type.upper()}",
+        title=f"Risk/Return MM for {contract_type.upper()}",
         xaxis_title="Underlying Price",
         yaxis_title="Profit/Loss ($)",
         template="plotly_white",
@@ -457,12 +434,87 @@ def recommend_trades_based_on_iv_hv(options_data, historical_volatility):
 
 
 
+#>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>FUNCION DE VERIFICACION DE CONTRATOS  >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> 
 
 
 
 
 
 
+# Function to get the current stock price
+@st.cache_data
+def get_current_stock_price(ticker):
+    url = f"{BASE_URL}/markets/quotes"
+    headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
+    params = {"symbols": ticker}
+    response = requests.get(url, headers=headers, params=params)
+
+    if response.status_code == 200:
+        quote = response.json().get("quotes", {}).get("quote", {})
+        return quote.get("last", 0)  # Current stock price
+    else:
+        st.error("Error fetching the current stock price.")
+        return 0
+
+# Function to get expiration dates
+@st.cache_data
+def get_expiration_dates(ticker):
+    url = f"{BASE_URL}/markets/options/expirations"
+    headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
+    params = {"symbol": ticker}
+    response = requests.get(url, headers=headers, params=params)
+
+    if response.status_code == 200:
+        return response.json().get("expirations", {}).get("date", [])
+    else:
+        st.error("Error fetching expiration dates.")
+        return []
+
+# Function to get option details including Theta and Delta
+@st.cache_data
+def get_option_details(ticker, strike, option_type, expiration_date):
+    url = f"{BASE_URL}/markets/options/chains"
+    headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
+    params = {"symbol": ticker, "expiration": expiration_date, "greeks": "true"}
+    response = requests.get(url, headers=headers, params=params)
+
+    if response.status_code == 200:
+        options = response.json().get("options", {}).get("option", [])
+        for option in options:
+            if (
+                option["strike"] == strike
+                and option["option_type"].upper() == option_type.upper()
+            ):
+                return {
+                    "current_price": option.get("last", 0),
+                    "theta": option.get("greeks", {}).get("theta", 0),
+                    "delta": option.get("greeks", {}).get("delta", 0),
+                }
+    st.error("No details found for the specified contract.")
+    return None
+
+# Function to calculate profit/loss
+def calculate_profit_loss(average_cost, current_contract_price, contracts):
+    profit_loss = (current_contract_price - average_cost) * contracts * 100  # Multiply by 100 for contract size
+    return profit_loss
+
+
+
+
+
+#######################
+
+
+
+
+
+
+
+
+
+
+
+#>>>>>>>>>>>>>>>>>>>>>>>>NEWS>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
 
 
@@ -526,14 +578,14 @@ def format_option_data(option, expiration_date, ticker, current_price):
     }
 
 # Interfaz de usuario
-st.title("📊 Analyst & AI Signals")
+st.title("SCANNER")
 
 
 
-ticker = st.text_input("Enter Ticker", value="SPY").upper()
+ticker = st.text_input("Ticker", value="NVDA").upper()
 expiration_dates = get_expiration_dates(ticker)
 if expiration_dates:
-    expiration_date = st.selectbox("Select Expiration Date", expiration_dates)
+    expiration_date = st.selectbox("Expiration Date", expiration_dates)
 else:
     st.error("No expiration dates available.")
     st.stop()
@@ -579,7 +631,7 @@ for contract in best_contracts:
         """, unsafe_allow_html=True)
 
 # Crear gráfico de opciones
-st.subheader("Strike vs Open Interest vs Volume")
+
 graph_data = pd.DataFrame({
     "Strike Price": [opt["strike"] for opt in best_contracts],
     "Open Interest": [opt["open_interest"] for opt in best_contracts],
@@ -593,24 +645,7 @@ st.plotly_chart(fig, use_container_width=True)
 
 
 
-# Datos procesados para el gráfico de Gamma Exposure
-st.subheader("Gamma Exposure Chart")
-processed_data = {}
-for opt in options_data:
-    strike = opt["strike"]
-    option_type = opt["option_type"].upper()
-    gamma = opt.get("greeks", {}).get("gamma", 0)
-    open_interest = opt.get("open_interest", 0)
 
-    if strike not in processed_data:
-        processed_data[strike] = {"CALL": {"Gamma": 0, "OI": 0}, "PUT": {"Gamma": 0, "OI": 0}}
-
-    processed_data[strike][option_type]["Gamma"] = gamma
-    processed_data[strike][option_type]["OI"] = open_interest
-
-# Generar el gráfico y mostrarlo
-gamma_fig = gamma_exposure_chart(processed_data, current_price)
-st.plotly_chart(gamma_fig, use_container_width=True)
 
 
 
@@ -629,7 +664,7 @@ current_price = get_current_price(ticker)
 # Verificar que los datos necesarios están disponibles
 if premium_paid > 0:
     # Generar gráfico de riesgo/retorno
-    st.subheader("Risk/Return Chart")
+    st.subheader("")
     risk_return_fig = risk_return_chart_auto(strike_price, premium_paid, current_price, contract_type)
     st.plotly_chart(risk_return_fig, use_container_width=True)
 else:
@@ -656,7 +691,7 @@ else:
     recommendations_df = pd.DataFrame(trade_recommendations)
 
     # Mostrar resultados originales en una tabla
-    st.write("### Recomendaciones de Compra/Venta basadas en IV vs HV")
+    st.write("### Recommended Options")
     st.dataframe(recommendations_df)
 
     # --- Agrupar por Strike y Tipo para simplificar el gráfico ---
@@ -670,7 +705,7 @@ else:
     )
 
     # Crear gráfico de barras con agrupación
-    st.write("### Gráfico de Contratos Recomendados (Agrupados por Strike y Tipo)")
+    st.write("")
     fig_recommendations = px.bar(
         recommendations_df_grouped,
         x="Strike",
@@ -690,3 +725,114 @@ else:
         }
     )
     st.plotly_chart(fig_recommendations, use_container_width=True)
+
+
+# Interfaz de usuario
+
+
+
+
+# Calcular Max Pain ajustado
+adjusted_max_pain = calculate_adjusted_max_pain(options_data)
+
+# Procesar los datos de opciones para generar un diccionario de strikes
+processed_data = {}
+for opt in options_data:
+    strike = opt["strike"]
+    option_type = opt["option_type"].upper()
+    gamma = opt.get("greeks", {}).get("gamma", 0)
+    open_interest = opt.get("open_interest", 0)
+
+    if strike not in processed_data:
+        processed_data[strike] = {"CALL": {"Gamma": 0, "OI": 0}, "PUT": {"Gamma": 0, "OI": 0}}
+
+    processed_data[strike][option_type]["Gamma"] = gamma
+    processed_data[strike][option_type]["OI"] = open_interest
+
+# Generar el gráfico de Gamma Exposure
+st.subheader("")
+gamma_fig = gamma_exposure_chart(processed_data, current_price, adjusted_max_pain)
+st.plotly_chart(gamma_fig, use_container_width=True)
+
+# Crear el Heatmap
+st.subheader("")
+heatmap_fig = create_heatmap(processed_data)
+st.plotly_chart(heatmap_fig, use_container_width=True)
+
+
+
+
+
+
+
+
+
+
+
+
+#>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>NEWS
+
+
+
+
+
+#VERIFICACION DE CONTRATOS   >>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+
+# User interface
+def contract_profit_loss_checker():
+    st.title("Option Profit/Loss Checker")
+
+    # Input: Ticker
+    ticker = st.text_input("Enter the ticker symbol of the underlying asset", value="MARA").upper()
+
+    # Automatically fetch the current stock price
+    current_stock_price = get_current_stock_price(ticker)
+    if current_stock_price > 0:
+        st.write(f"**Current stock price for {ticker}:** ${current_stock_price:.2f}")
+    else:
+        st.stop()
+
+    # Fetch expiration dates
+    expiration_dates = get_expiration_dates(ticker)
+    if expiration_dates:
+        expiration_date = st.selectbox("Select expiration date", expiration_dates)
+    else:
+        st.stop()
+
+    # Input: Contract details
+    strike = st.number_input("strike price", min_value=0.0, step=0.01, value=30.0)
+    option_type = st.selectbox("option type", ["CALL", "PUT"])
+    average_cost = st.number_input("Enter the average cost (price you paid per contract)", min_value=0.0, step=0.01, value=4.36)
+    contracts = st.number_input("Enter the number of contracts", min_value=1, step=1, value=1)
+
+    # Fetch option details
+    option_details = get_option_details(ticker, strike, option_type, expiration_date)
+    if option_details:
+        current_contract_price = option_details["current_price"]
+        st.write(f"**Current contract price:** ${current_contract_price:.2f}")
+
+        # Calculate profit or loss
+        profit_loss = calculate_profit_loss(
+            average_cost,
+            current_contract_price,
+            contracts,
+        )
+
+        # Display results
+        if profit_loss > 0:
+            st.success(f"You are in profit! Total profit: ${profit_loss:.2f}")
+        elif profit_loss < 0:
+            st.error(f"You are at a loss. Total loss: ${abs(profit_loss):.2f}")
+        else:
+            st.info("You are breaking even. No profit or loss.")
+    else:
+        st.stop()
+
+if __name__ == "__main__":
+    contract_profit_loss_checker()
+
+
+
+########################
+
