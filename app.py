@@ -12,37 +12,51 @@ import bcrypt
 import streamlit_authenticator as stauth
 import csv
 from bs4 import BeautifulSoup
-import requests
 from datetime import datetime, timedelta
+import xgboost as xgb
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, classification_report
+import openai
+from dotenv import load_dotenv
+
 
 # Configuración inicial de la página
 st.set_page_config(page_title="SCANNER OPTIONS", layout="wide")
 
-#>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>seguridad
-
-
-
 # Configuración de la API Tradier
 API_KEY = "wMG8GrrZMBFeZMCWJTqTzZns7B4w"
 BASE_URL = "https://api.tradier.com/v1"
-# Configuración de la API de Noticias
-NEWS_API_KEY = "dc681719f9854b148abf6fc1c94fdb33"  # API KEY para NewsAPI
-NEWS_BASE_URL = "https://newsapi.org/v2/everything"  # Endpoint de NewsAPI
-
-
 
 # Función para obtener datos de opciones
 @st.cache_data
 def get_options_data(ticker, expiration_date):
     url = f"{BASE_URL}/markets/options/chains"
     headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
-    params = {"symbol": ticker, "expiration": expiration_date, "greeks": "true"}  # Activar Greeks
+    params = {"symbol": ticker, "expiration": expiration_date, "greeks": "true"}
     response = requests.get(url, headers=headers, params=params)
 
     if response.status_code == 200:
         return response.json().get("options", {}).get("option", [])
     else:
         st.error("Error fetching options data.")
+        return []
+
+# Función para obtener fechas de expiración
+@st.cache_data
+def get_expiration_dates(ticker):
+    url = f"{BASE_URL}/markets/options/expirations"
+    headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
+    params = {"symbol": ticker}
+    response = requests.get(url, headers=headers, params=params)
+
+    if response.status_code == 200:
+        return response.json().get("expirations", {}).get("date", [])
+    else:
+        st.error("Error fetching expiration dates.")
         return []
 
 # Función para obtener el precio actual
@@ -60,192 +74,112 @@ def get_current_price(ticker):
         st.error("Error fetching current price.")
         return 0
 
-# Función para obtener fechas de expiración
-@st.cache_data
-def get_expiration_dates(ticker):
-    url = f"{BASE_URL}/markets/options/expirations"
-    headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
-    params = {"symbol": ticker}
-    response = requests.get(url, headers=headers, params=params)
-
-    if response.status_code == 200:
-        return response.json().get("expirations", {}).get("date", [])
-    else:
-        st.error("Error fetching expiration dates.")
-        return []
-
-# Función para calcular Max Pain
-def calculate_max_pain(options_data):
+# Función para calcular Max Pain ajustado
+# Función optimizada para calcular el Max Pain
+def calculate_max_pain_optimized(options_data):
     if not options_data:
         return None
+
+    # Diccionario para agrupar datos por strike
     strikes = {}
     for option in options_data:
         strike = option["strike"]
-        open_interest = option["open_interest"] or 0
+        oi = option.get("open_interest", 0) or 0
+        volume = option.get("volume", 0) or 0
+        option_type = option["option_type"].upper()
+
         if strike not in strikes:
-            strikes[strike] = 0
-        strikes[strike] += open_interest
-    return max(strikes, key=strikes.get)
+            strikes[strike] = {"CALL": {"OI": 0, "Volume": 0}, "PUT": {"OI": 0, "Volume": 0}}
 
-# Función para calcular puntuación avanzada
-def calculate_advanced_score(option, current_price, max_pain):
-    open_interest = option["open_interest"] or 0
-    volume = option["volume"] or 0
-    implied_volatility = option.get("implied_volatility", 0)
-    strike = option["strike"]
+        # Acumular OI y Volumen
+        strikes[strike][option_type]["OI"] += oi
+        strikes[strike][option_type]["Volume"] += volume
 
-    # Calcular puntuación basada en los factores
-    score = (0.4 * open_interest) + (0.3 * volume) + (0.2 * implied_volatility) - (0.1 * abs(max_pain - strike))
-    return score
+    # Lista de strikes ordenados
+    strike_prices = sorted(strikes.keys())
 
-# Función para seleccionar los mejores contratos
-def select_best_contracts(options_data, current_price):
-    max_pain = calculate_max_pain(options_data)
-    best_contracts = []
+    # Calcular la pérdida total para cada strike
+    total_losses = {}
+    for strike in strike_prices:
+        loss_call = sum(
+            (strikes[s]["CALL"]["OI"] + strikes[s]["CALL"]["Volume"]) * max(0, s - strike)
+            for s in strike_prices
+        )
+        loss_put = sum(
+            (strikes[s]["PUT"]["OI"] + strikes[s]["PUT"]["Volume"]) * max(0, strike - s)
+            for s in strike_prices
+        )
+        total_losses[strike] = loss_call + loss_put
 
-    for option in options_data:
-        score = calculate_advanced_score(option, current_price, max_pain)
-        entry_price = option["last"] or option["bid"] or 0
+    # Strike con la menor pérdida total
+    max_pain = min(total_losses, key=total_losses.get)
+    return max_pain
 
-        # Filtrar contratos razonables (no precios irreales)
-        if score > 0 and entry_price > 0 and abs(option["strike"] - current_price) <= 20:
-            option["score"] = score
-            best_contracts.append(option)
+# Modificar el gráfico de Gamma Exposure para usar el cálculo mejorado
+# Función para crear el gráfico de exposición gamma optimizado
+def gamma_exposure_chart_optimized(processed_data, current_price, max_pain):
+    strikes = sorted(processed_data.keys())
 
-    # Ordenar por puntuación y seleccionar los top 6
-    best_contracts = sorted(best_contracts, key=lambda x: x["score"], reverse=True)[:8]
-    return best_contracts
-
-
-import plotly.graph_objects as go
-
-# Función para obtener datos de opciones
-@st.cache_data
-def get_options_data(ticker, expiration_date):
-    url = f"{BASE_URL}/markets/options/chains"
-    headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
-    params = {"symbol": ticker, "expiration": expiration_date, "greeks": "true"}  # Activar Greeks
-    response = requests.get(url, headers=headers, params=params)
-
-    if response.status_code == 200:
-        return response.json().get("options", {}).get("option", [])
-    else:
-        st.error("Error fetching options data.")
-        return []
-
-# Función para obtener el precio actual
-@st.cache_data
-def get_current_price(ticker):
-    url = f"{BASE_URL}/markets/quotes"
-    headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
-    params = {"symbols": ticker}
-    response = requests.get(url, headers=headers, params=params)
-
-    if response.status_code == 200:
-        quote = response.json().get("quotes", {}).get("quote", {})
-        return quote.get("last", 0)
-    else:
-        st.error("Error fetching current price.")
-        return 0
-
-# Función para obtener fechas de expiración
-@st.cache_data
-def get_expiration_dates(ticker):
-    url = f"{BASE_URL}/markets/options/expirations"
-    headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
-    params = {"symbol": ticker}
-    response = requests.get(url, headers=headers, params=params)
-
-    if response.status_code == 200:
-        return response.json().get("expirations", {}).get("date", [])
-    else:
-        st.error("Error fetching expiration dates.")
-        return []
-
-# Función para calcular Max Pain (ajustado)
-def calculate_adjusted_max_pain(options_data):
-    strikes = {}
-    for option in options_data:
-        strike = option["strike"]
-        open_interest = option["open_interest"] or 0
-        if strike not in strikes:
-            strikes[strike] = 0
-        strikes[strike] += open_interest
-    return max(strikes, key=strikes.get)
-
-# Función para calcular Gamma Exposure y graficarlo
-def gamma_exposure_chart(strikes_data, current_price, max_pain):
-    strikes = sorted(strikes_data.keys())
-
-    gamma_calls = [strikes_data[s]["CALL"]["OI"] * strikes_data[s]["CALL"]["Gamma"] for s in strikes]
-    gamma_puts = [strikes_data[s]["PUT"]["OI"] * strikes_data[s]["PUT"]["Gamma"] for s in strikes]
+    gamma_calls = [processed_data[s]["CALL"]["OI"] * processed_data[s]["CALL"]["Gamma"] for s in strikes]
+    gamma_puts = [-processed_data[s]["PUT"]["OI"] * processed_data[s]["PUT"]["Gamma"] for s in strikes]
 
     fig = go.Figure()
 
-    fig.add_trace(go.Bar(
-        x=strikes,
-        y=gamma_calls,
-        name="Gamma CALL",
-        marker_color="blue"
-    ))
+    # Añadir barras de Gamma Calls y Gamma Puts
+    fig.add_trace(go.Bar(x=strikes, y=gamma_calls, name="Gamma CALL", marker_color="blue"))
+    fig.add_trace(go.Bar(x=strikes, y=gamma_puts, name="Gamma PUT", marker_color="red"))
 
-    fig.add_trace(go.Bar(
-        x=strikes,
-        y=[-g for g in gamma_puts],
-        name="Gamma PUT",
-        marker_color="red"
-    ))
-
+    # Línea de Precio Actual
     fig.add_shape(
         type="line",
-        x0=current_price,
-        x1=current_price,
-        y0=min(-max(gamma_puts), min(gamma_calls)) * 1.1,
-        y1=max(max(gamma_calls), -min(gamma_puts)) * 1.1,
-        line=dict(color="orange", width=2, dash="dot")
+        x0=current_price, x1=current_price,
+        y0=min(gamma_calls + gamma_puts) * 1.1,
+        y1=max(gamma_calls + gamma_puts) * 1.1,
+        line=dict(color="orange", dash="dot", width=1),  # Línea más delgada
     )
 
+    # Línea de Max Pain
     fig.add_shape(
         type="line",
-        x0=max_pain,
-        x1=max_pain,
-        y0=min(-max(gamma_puts), min(gamma_calls)) * 1.1,
-        y1=max(max(gamma_calls), -min(gamma_puts)) * 1.1,
-        line=dict(color="green", width=2, dash="dash")
+        x0=max_pain, x1=max_pain,
+        y0=min(gamma_calls + gamma_puts) * 1.1,
+        y1=max(gamma_calls + gamma_puts) * 1.1,
+        line=dict(color="green", dash="dash", width=1),  # Línea más delgada
     )
 
+    # Etiqueta para el Precio Actual
     fig.add_annotation(
         x=current_price,
-        y=max(max(gamma_calls), -min(gamma_puts)) * 0.9,
+        y=max(gamma_calls + gamma_puts) * 0.9,
         text=f"Current Price: ${current_price:.2f}",
         showarrow=True,
         arrowhead=2,
         arrowcolor="orange",
-        font=dict(color="orange", size=12)
+        font=dict(color="orange", size=12),
     )
 
+    # Etiqueta para Max Pain
     fig.add_annotation(
         x=max_pain,
-        y=max(max(gamma_calls), -min(gamma_puts)) * 0.8,
+        y=max(gamma_calls + gamma_puts) * 0.8,
         text=f"Max Pain: ${max_pain:.2f}",
         showarrow=True,
         arrowhead=2,
         arrowcolor="green",
-        font=dict(color="green", size=12)
+        font=dict(color="green", size=12),
     )
 
     fig.update_layout(
-        title="Gamma Exposure (Calls vs Puts) Target",
+        title="Gamma Exposure (Calls vs Puts)",
         xaxis_title="Strike Price",
         yaxis_title="Gamma Exposure",
-        barmode="relative",
         template="plotly_white",
-        legend=dict(title="Option Type")
+        legend=dict(title="Option Type"),
     )
-
     return fig
 
-# Función para crear el heatmap
+
+# Función para crear Heatmap
 def create_heatmap(processed_data):
     strikes = sorted(processed_data.keys())
 
@@ -254,7 +188,6 @@ def create_heatmap(processed_data):
     volume = [processed_data[s]["CALL"]["OI"] * processed_data[s]["CALL"]["Gamma"] +
               processed_data[s]["PUT"]["OI"] * processed_data[s]["PUT"]["Gamma"] for s in strikes]
 
-    # Normalización de las métricas
     data = pd.DataFrame({
         'OI': oi,
         'Gamma': gamma,
@@ -272,470 +205,92 @@ def create_heatmap(processed_data):
     ))
 
     fig.update_layout(
-        title="Supports & Resistences",
+        title="Supports & Resistances (Heatmap)",
         xaxis_title="Strike Price",
-        yaxis_title="Métrica",
+        yaxis_title="Metrics",
         template="plotly_dark"
     )
 
     return fig
 
+# Función para crear Skew Analysis Chart
+def plot_skew_analysis_with_totals(options_data):
+    # Crear listas para strikes, IV y tipos
+    strikes = [option["strike"] for option in options_data]
+    iv = [option.get("implied_volatility", 0) * 100 for option in options_data]
+    option_type = [option["option_type"].upper() for option in options_data]
+    open_interest = [option.get("open_interest", 0) for option in options_data]
 
+    # Sumar el Open Interest y Volumen total para CALLS y PUTS
+    total_calls = sum(option.get("open_interest", 0) for option in options_data if option["option_type"].upper() == "CALL")
+    total_puts = sum(option.get("open_interest", 0) for option in options_data if option["option_type"].upper() == "PUT")
+    total_volume_calls = sum(option.get("volume", 0) for option in options_data if option["option_type"].upper() == "CALL")
+    total_volume_puts = sum(option.get("volume", 0) for option in options_data if option["option_type"].upper() == "PUT")
 
+    # Aplicar desplazamiento dinámico en el eje Y
+    adjusted_iv = [
+        iv[i] + (open_interest[i] * 0.01) if option_type[i] == "CALL" else
+        -(iv[i] + (open_interest[i] * 0.01)) for i in range(len(iv))
+    ]
 
+    # Crear DataFrame para análisis
+    skew_df = pd.DataFrame({
+        "Strike": strikes,
+        "Adjusted IV (%)": adjusted_iv,
+        "Option Type": option_type,
+        "Open Interest": open_interest
+    })
 
-
-
-
-
-
-
-#grafica de precio de contrato  
-def risk_return_chart_auto(strike_price, premium_paid, current_price, contract_type):
-    # Rango de precios del subyacente alrededor del precio actual (±20%)
-    prices = np.linspace(current_price * 0.8, current_price * 1.2, 100)
-    profit_loss = []
-
-    # Calcular ganancia/pérdida para cada precio del subyacente
-    if contract_type.upper() == "CALL":
-        profit_loss = [(max(price - strike_price, 0) - premium_paid) for price in prices]
-    elif contract_type.upper() == "PUT":
-        profit_loss = [(max(strike_price - price, 0) - premium_paid) for price in prices]
-    else:
-        raise ValueError("Invalid contract type. Use 'CALL' or 'PUT'.")
-
-    # Crear figura del gráfico
-    fig = go.Figure()
-
-    # Añadir la línea de ganancia/pérdida
-    fig.add_trace(go.Scatter(
-        x=prices,
-        y=profit_loss,
-        mode='lines',
-        name='Profit/Loss',
-        line=dict(color="green")
-    ))
-
-    # Línea para el precio actual
-    fig.add_shape(
-        type="line",
-        x0=current_price,
-        x1=current_price,
-        y0=min(profit_loss),
-        y1=max(profit_loss),
-        line=dict(color="orange", width=2, dash="dot"),
-        name="Current Price"
+    # Crear gráfico interactivo con Plotly Express
+    title = f"IV Analysis<br><span style='font-size:16px;'> CALLS: {total_calls} | PUTS: {total_puts} | VC {total_volume_calls} | VP {total_volume_puts}</span>"
+    fig = px.scatter(
+        skew_df,
+        x="Strike",
+        y="Adjusted IV (%)",
+        color="Option Type",
+        size="Open Interest",
+        hover_data=["Strike", "Option Type", "Open Interest", "Adjusted IV (%)"],
+        title=title,
+        labels={"Option Type": "Contract Type"},
+        color_discrete_map={"CALL": "blue", "PUT": "red"},
     )
 
-    # Líneas para el precio de ejercicio (strike)
-    fig.add_shape(
-        type="line",
-        x0=strike_price,
-        x1=strike_price,
-        y0=min(profit_loss),
-        y1=max(profit_loss),
-        line=dict(color="blue", width=2, dash="dot"),
-        name="Strike Price"
-    )
-
-    # Anotaciones para precio actual y strike
-    fig.add_annotation(
-        x=current_price,
-        y=0,
-        text=f"Current Price: ${current_price:.2f}",
-        showarrow=True,
-        arrowhead=2,
-        arrowcolor="orange",
-        font=dict(color="orange", size=12)
-    )
-    fig.add_annotation(
-        x=strike_price,
-        y=0,
-        text=f"Strike Price: ${strike_price:.2f}",
-        showarrow=True,
-        arrowhead=2,
-        arrowcolor="blue",
-        font=dict(color="blue", size=12)
-    )
-
-    # Configurar el diseño del gráfico
+    # Ajustar diseño del gráfico
     fig.update_layout(
-        title=f"Risk/Return MM for {contract_type.upper()}",
-        xaxis_title="Underlying Price",
-        yaxis_title="Profit/Loss ($)",
+        xaxis_title="Strike Price",
+        yaxis_title="Implied Volatility (%) (CALLS y PUTS)",
+        legend_title="Option Type",
         template="plotly_white",
-        legend=dict(title="Legend"),
-        shapes=[
-            dict(
-                type="line",
-                x0=strike_price,
-                x1=strike_price,
-                y0=min(profit_loss),
-                y1=max(profit_loss),
-                line=dict(color="blue", width=2, dash="dot")
-            )
-        ]
+        title_x=0.5  # Centrar el título
     )
+    return fig, total_calls, total_puts
 
-    return fig
 
 
 
 
-
-
-
-
-# --- Función para generar recomendaciones basadas en IV, HV y tipo de contrato ---
-def recommend_trades_based_on_iv_hv(options_data, historical_volatility):
-    recommendations = []
-
-    for option in options_data:
-        strike = option["strike"]
-        iv = option.get("implied_volatility", 0) * 100  # Convertir a porcentaje
-        delta = option.get("greeks", {}).get("delta", 0)
-        option_type = option["option_type"].upper()
-
-        # Calcular la diferencia IV - HV
-        iv_minus_hv = iv - historical_volatility
-
-        # Reglas de recomendación para Calls
-        if option_type == "CALL":
-            if iv_minus_hv > 20 and delta > 0.8:
-                recommendation = "Sell Call"
-            elif iv_minus_hv < -10 and delta < 0.2:
-                recommendation = "Buy Call"
-            else:
-                recommendation = "Avoid Call"
-
-        # Reglas de recomendación para Puts
-        elif option_type == "PUT":
-            if iv_minus_hv > 20 and delta < -0.8:
-                recommendation = "Sell Put"
-            elif iv_minus_hv < -10 and delta > -0.2:
-                recommendation = "Buy Put"
-            else:
-                recommendation = "Avoid Put"
-
-        # Añadir datos relevantes
-        recommendations.append({
-            "Strike": strike,
-            "Type": option_type,
-            "IV": round(iv, 2),
-            "HV": round(historical_volatility, 2),
-            "IV - HV": round(iv_minus_hv, 2),
-            "Delta": round(delta, 4),
-            "Recommendation": recommendation
-        })
-
-    return recommendations
-
-
-
-
-
-#>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>FUNCION DE VERIFICACION DE CONTRATOS  >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> 
-
-
-
-
-
-
-# Function to get the current stock price
-@st.cache_data
-def get_current_stock_price(ticker):
-    url = f"{BASE_URL}/markets/quotes"
-    headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
-    params = {"symbols": ticker}
-    response = requests.get(url, headers=headers, params=params)
-
-    if response.status_code == 200:
-        quote = response.json().get("quotes", {}).get("quote", {})
-        return quote.get("last", 0)  # Current stock price
-    else:
-        st.error("Error fetching the current stock price.")
-        return 0
-
-# Function to get expiration dates
-@st.cache_data
-def get_expiration_dates(ticker):
-    url = f"{BASE_URL}/markets/options/expirations"
-    headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
-    params = {"symbol": ticker}
-    response = requests.get(url, headers=headers, params=params)
-
-    if response.status_code == 200:
-        return response.json().get("expirations", {}).get("date", [])
-    else:
-        st.error("Error fetching expiration dates.")
-        return []
-
-# Function to get option details including Theta and Delta
-@st.cache_data
-def get_option_details(ticker, strike, option_type, expiration_date):
-    url = f"{BASE_URL}/markets/options/chains"
-    headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
-    params = {"symbol": ticker, "expiration": expiration_date, "greeks": "true"}
-    response = requests.get(url, headers=headers, params=params)
-
-    if response.status_code == 200:
-        options = response.json().get("options", {}).get("option", [])
-        for option in options:
-            if (
-                option["strike"] == strike
-                and option["option_type"].upper() == option_type.upper()
-            ):
-                return {
-                    "current_price": option.get("last", 0),
-                    "theta": option.get("greeks", {}).get("theta", 0),
-                    "delta": option.get("greeks", {}).get("delta", 0),
-                }
-    st.error("No details found for the specified contract.")
-    return None
-
-# Function to calculate profit/loss
-def calculate_profit_loss(average_cost, current_contract_price, contracts):
-    profit_loss = (current_contract_price - average_cost) * contracts * 100  # Multiply by 100 for contract size
-    return profit_loss
-
-
-
-
-
-#######################
-
-
-
-
-
-
-
-
-
-
-
-#>>>>>>>>>>>>>>>>>>>>>>>>NEWS>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# Función para formatear datos de contratos
-def format_option_data(option, expiration_date, ticker, current_price):
-    expiration_date_formatted = datetime.strptime(expiration_date, "%Y-%m-%d").strftime("%b-%d").upper()
-    option_type = option["option_type"].upper()
-    strike = option["strike"]
-    entry_price = option["last"] or option["bid"] or 0
-
-    # Cálculo ajustado de Max Gain basado en el movimiento esperado
-    if option_type == "CALL":
-        max_gain = ((strike - current_price) / entry_price * 100) if strike > current_price else -100
-    elif option_type == "PUT":
-        max_gain = ((current_price - strike) / entry_price * 100) if strike < current_price else -100
-    else:
-        max_gain = 0
-
-    # Cálculo del riesgo-recompensa
-    rr_ratio = max_gain / entry_price if entry_price > 0 else 0
-
-    # Ajuste de valores de salida
-    target_1 = round(entry_price * 1.1, 2)
-    target_2 = round(entry_price * 1.2, 2)
-    target_3 = round(entry_price * 1.3, 2)
-
-    # Añadir valores de Greeks formateados
-    delta = round(option.get("greeks", {}).get("delta", 0), 4)
-    gamma = round(option.get("greeks", {}).get("gamma", 0), 4)
-    theta = round(option.get("greeks", {}).get("theta", 0), 4)
-
-    return {
-        "Ticker": f"{ticker} {strike:.1f}/{option_type} {expiration_date_formatted}",
-        "Entry": round(entry_price, 2),
-        "Entry Date": datetime.now().strftime("%Y-%m-%d"),
-        "Max Gain": f"{max_gain:.2f}%",
-        "Risk-Reward Ratio": f"{rr_ratio:.2f}",
-        "Status": "Live" if max_gain > 0 else "Closed at loss",
-        "1st Exit": target_1,
-        "2nd Exit": target_2,
-        "3rd Exit": target_3,
-        "Logo": "📈" if option_type == "CALL" else "📉",
-        "Delta": delta,
-        "Gamma": gamma,
-        "Theta": theta,
-        "Bid": round(option["bid"], 2) if option["bid"] else "N/A",
-        "Ask": round(option["ask"], 2) if option["ask"] else "N/A",
-        "Volume": option["volume"] or "N/A",
-        "Open Interest": option["open_interest"] or "N/A"
-    }
 
 # Interfaz de usuario
-st.title("SCANNER")
+st.title("SCANNER OPTIONS")
 
-
-
-ticker = st.text_input("Ticker", value="NVDA").upper()
+ticker = st.text_input("Ticker", value="AAPL", key="ticker_input").upper()
 expiration_dates = get_expiration_dates(ticker)
 if expiration_dates:
-    expiration_date = st.selectbox("Expiration Date", expiration_dates)
+    expiration_date = st.selectbox("Expiration Date", expiration_dates, key="expiration_date")
 else:
     st.error("No expiration dates available.")
     st.stop()
 
 current_price = get_current_price(ticker)
-st.write(f"**Current Price for {ticker}:** ${current_price:.2f}")
-
 options_data = get_options_data(ticker, expiration_date)
-best_contracts = select_best_contracts(options_data, current_price)
+if not options_data:
+    st.error("No options data available.")
+    st.stop()
 
-st.subheader("Recommended Contracts")
-for contract in best_contracts:
-    formatted_data = format_option_data(contract, expiration_date, ticker, current_price)
-    col1, col2, col3 = st.columns([1, 5, 2])
+# Calcular Max Pain con el cálculo mejorado
+max_pain = calculate_max_pain_optimized(options_data)
 
-    # Cambiar colores dinámicamente según valores
-    max_gain_color = "#28a745" if float(formatted_data["Max Gain"].strip('%')) > 0 else "#dc3545"
-    rr_ratio_color = "#ffc107" if float(formatted_data["Risk-Reward Ratio"]) > 50 else "#dc3545"
-    status_color = "#28a745" if formatted_data["Status"] == "Live" else "#dc3545"
-
-    with col1:
-        st.markdown(f"<h1 style='font-size:50px;'>{formatted_data['Logo']}</h1>", unsafe_allow_html=True)
-    with col2:
-        st.markdown(f"""
-        <div style="padding:10px; border:1px solid #ddd; border-radius:10px;">
-            <h4 style="margin:0; color: #007bff;">{formatted_data['Ticker']}</h4>
-            <p style="margin:0; color: #666;">Entry: {formatted_data['Entry']} | Entry Date: {formatted_data['Entry Date']}</p>
-            <p style="margin:0; font-weight:bold; color: {max_gain_color};">Max Gain: {formatted_data['Max Gain']}</p>
-            <p style="margin:0; font-weight:bold; color: {rr_ratio_color};">Risk-Reward Ratio: {formatted_data['Risk-Reward Ratio']}</p>
-            <p style="margin:0; font-weight:bold; color: {status_color};">Status: {formatted_data['Status']}</p>
-            <p style="margin:0; color: #555;">Bid: {formatted_data['Bid']} | Ask: {formatted_data['Ask']}</p>
-            <p style="margin:0; color: #555;">Volume: {formatted_data['Volume']} | Open Interest: {formatted_data['Open Interest']}</p>
-            <p style="margin:0; color: #555;">Delta: {formatted_data['Delta']} | Gamma: {formatted_data['Gamma']} | Theta: {formatted_data['Theta']}</p>
-        </div>
-        """, unsafe_allow_html=True)
-    with col3:
-        st.markdown(f"""
-        <div style="text-align:center;">
-            <p>1st Exit: {formatted_data['1st Exit']}</p>
-            <p>2nd Exit: {formatted_data['2nd Exit']}</p>
-            <p>3rd Exit: {formatted_data['3rd Exit']}</p>
-        </div>
-        """, unsafe_allow_html=True)
-
-# Crear gráfico de opciones
-
-graph_data = pd.DataFrame({
-    "Strike Price": [opt["strike"] for opt in best_contracts],
-    "Open Interest": [opt["open_interest"] for opt in best_contracts],
-    "Volume": [opt["volume"] for opt in best_contracts]
-})
-fig = px.scatter(graph_data, x="Strike Price", y="Open Interest", size="Volume",
-                 title="Strike vs Open Interest vs Volume", color="Volume")
-st.plotly_chart(fig, use_container_width=True)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# Selecciona automáticamente el primer contrato como ejemplo
-selected_contract = best_contracts[0]  # Seleccionar el mejor contrato basado en la puntuación
-strike_price = selected_contract["strike"]
-premium_paid = selected_contract["last"] or selected_contract["bid"]  # Último precio o precio de compra
-contract_type = selected_contract["option_type"]
-current_price = get_current_price(ticker)
-
-# Verificar que los datos necesarios están disponibles
-if premium_paid > 0:
-    # Generar gráfico de riesgo/retorno
-    st.subheader("")
-    risk_return_fig = risk_return_chart_auto(strike_price, premium_paid, current_price, contract_type)
-    st.plotly_chart(risk_return_fig, use_container_width=True)
-else:
-    st.warning("No valid premium price available for the selected contract.")
-
-
-
-
-
-
-
-# --- Despliegue en la app ---
-# Calcular volatilidad histórica simulada (sustituir por datos reales si están disponibles)
-historical_volatility = 25  # Supongamos 30% como ejemplo
-
-# Generar recomendaciones basadas en IV, HV y tipo de contrato
-trade_recommendations = recommend_trades_based_on_iv_hv(options_data, historical_volatility)
-
-# Validar si hay datos antes de mostrar la tabla y el gráfico
-if not trade_recommendations:
-    st.warning("No hay contratos recomendados basados en IV vs HV.")
-else:
-    # Crear dataframe de recomendaciones
-    recommendations_df = pd.DataFrame(trade_recommendations)
-
-    # Mostrar resultados originales en una tabla
-    st.write("### Recommended Options")
-    st.dataframe(recommendations_df)
-
-    # --- Agrupar por Strike y Tipo para simplificar el gráfico ---
-    recommendations_df_grouped = (
-        recommendations_df.groupby(["Strike", "Type"], as_index=False)
-        .agg({
-            "IV - HV": "mean",  # Promediar IV - HV por Strike y Tipo
-            "Recommendation": lambda x: x.mode()[0] if not x.empty else "Avoid",  # Recomendación dominante
-            "Delta": "mean"  # Promediar Delta
-        })
-    )
-
-    # Crear gráfico de barras con agrupación
-    st.write("")
-    fig_recommendations = px.bar(
-        recommendations_df_grouped,
-        x="Strike",
-        y="IV - HV",
-        color="Recommendation",
-        facet_col="Type",  # Separar por Calls y Puts
-        title="IV - HV, Delta y Tipo",
-        labels={"IV - HV": "Diferencia IV - HV", "Type": "Tipo de Contrato"},
-        text="Recommendation",
-        color_discrete_map={
-            "Buy Call": "green",
-            "Sell Call": "red",
-            "Avoid Call": "gray",
-            "Buy Put": "blue",
-            "Sell Put": "purple",
-            "Avoid Put": "orange"
-        }
-    )
-    st.plotly_chart(fig_recommendations, use_container_width=True)
-
-
-# Interfaz de usuario
-
-
-
-
-# Calcular Max Pain ajustado
-adjusted_max_pain = calculate_adjusted_max_pain(options_data)
-
-# Procesar los datos de opciones para generar un diccionario de strikes
+# Procesar datos para gráficos
 processed_data = {}
 for opt in options_data:
     strike = opt["strike"]
@@ -749,13 +304,16 @@ for opt in options_data:
     processed_data[strike][option_type]["Gamma"] = gamma
     processed_data[strike][option_type]["OI"] = open_interest
 
-# Generar el gráfico de Gamma Exposure
-st.subheader("")
-gamma_fig = gamma_exposure_chart(processed_data, current_price, adjusted_max_pain)
+# Mostrar gráficos
+st.subheader("Gamma Exposure")
+gamma_fig = gamma_exposure_chart_optimized(processed_data, current_price, max_pain)
 st.plotly_chart(gamma_fig, use_container_width=True)
+st.write(f"**Max Pain Calculated:** ${max_pain}")
+st.write(f"**Current Price:** ${current_price:.2f}")
 
-# Crear el Heatmap
-st.subheader("")
+
+
+st.subheader("Heatmap")
 heatmap_fig = create_heatmap(processed_data)
 st.plotly_chart(heatmap_fig, use_container_width=True)
 
@@ -764,75 +322,241 @@ st.plotly_chart(heatmap_fig, use_container_width=True)
 
 
 
+st.subheader("Skew Analysis")
+
+# Llamar a la función mejorada
+skew_fig, total_calls, total_puts = plot_skew_analysis_with_totals(options_data)
+
+# Mostrar los totales en Streamlit
+st.write(f"**Total CALLS** {total_calls}")
+st.write(f"**Total PUTS** {total_puts}")
+
+# Mostrar el gráfico
+st.plotly_chart(skew_fig, use_container_width=True)
+
+
+
+# Función para generar señales en formato de tarjetas
 
 
 
 
 
 
-#>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>NEWS
 
 
 
 
 
-#VERIFICACION DE CONTRATOS   >>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-
-
-# User interface
-def contract_profit_loss_checker():
-    st.title("Option Profit/Loss Checker")
-
-    # Input: Ticker
-    ticker = st.text_input("Enter the ticker symbol of the underlying asset", value="MARA").upper()
-
-    # Automatically fetch the current stock price
-    current_stock_price = get_current_stock_price(ticker)
-    if current_stock_price > 0:
-        st.write(f"**Current stock price for {ticker}:** ${current_stock_price:.2f}")
-    else:
-        st.stop()
-
-    # Fetch expiration dates
-    expiration_dates = get_expiration_dates(ticker)
-    if expiration_dates:
-        expiration_date = st.selectbox("Select expiration date", expiration_dates)
-    else:
-        st.stop()
-
-    # Input: Contract details
-    strike = st.number_input("strike price", min_value=0.0, step=0.01, value=30.0)
-    option_type = st.selectbox("option type", ["CALL", "PUT"])
-    average_cost = st.number_input("Enter the average cost (price you paid per contract)", min_value=0.0, step=0.01, value=4.36)
-    contracts = st.number_input("Enter the number of contracts", min_value=1, step=1, value=1)
-
-    # Fetch option details
-    option_details = get_option_details(ticker, strike, option_type, expiration_date)
-    if option_details:
-        current_contract_price = option_details["current_price"]
-        st.write(f"**Current contract price:** ${current_contract_price:.2f}")
-
-        # Calculate profit or loss
-        profit_loss = calculate_profit_loss(
-            average_cost,
-            current_contract_price,
-            contracts,
-        )
-
-        # Display results
-        if profit_loss > 0:
-            st.success(f"You are in profit! Total profit: ${profit_loss:.2f}")
-        elif profit_loss < 0:
-            st.error(f"You are at a loss. Total loss: ${abs(profit_loss):.2f}")
-        else:
-            st.info("You are breaking even. No profit or loss.")
-    else:
-        st.stop()
-
-if __name__ == "__main__":
-    contract_profit_loss_checker()
 
 
 
-########################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#########################################################################
+
+
+def calculate_support_resistance_gamma(processed_data, current_price, price_range=20):
+    """
+    Calcula el soporte y la resistencia basados en el Gamma más alto dentro de un rango dado.
+    """
+    max_gamma_call, max_gamma_put = -1, -1
+    resistance_strike, support_strike = None, None
+
+    # Filtrar strikes en el rango deseado
+    strikes_in_range = {
+        strike: data for strike, data in processed_data.items()
+        if current_price - price_range <= strike <= current_price + price_range
+    }
+
+    # Buscar la resistencia (CALL con mayor Gamma)
+    for strike, data in strikes_in_range.items():
+        gamma_call = data["CALL"].get("Gamma", 0)
+        if strike >= current_price and gamma_call > max_gamma_call:
+            max_gamma_call = gamma_call
+            resistance_strike = strike
+
+    # Buscar el soporte (PUT con mayor Gamma)
+    for strike, data in strikes_in_range.items():
+        gamma_put = data["PUT"].get("Gamma", 0)
+        if strike <= current_price and gamma_put > max_gamma_put:
+            max_gamma_put = gamma_put
+            support_strike = strike
+
+    # Validar resultados
+    return {
+        "Resistance (CALL)": {
+            "Strike": resistance_strike or "No Match",
+            "Gamma": max_gamma_call if resistance_strike else 0,
+        },
+        "Support (PUT)": {
+            "Strike": support_strike or "No Match",
+            "Gamma": max_gamma_put if support_strike else 0,
+        },
+    }
+
+
+def generate_winning_contract(options_data, current_price, iv_hv_ratio=1.2):
+    """
+    Genera un contrato ganador basado en criterios calculados.
+    """
+    winning_contracts = []
+
+    for option in options_data:
+        strike = option["strike"]
+        delta = option.get("greeks", {}).get("delta", 0)
+        gamma = option.get("greeks", {}).get("gamma", 0)
+        theta = option.get("greeks", {}).get("theta", 0)
+        iv = option.get("implied_volatility", 0) * 100
+        hv = option.get("historical_volatility", 0) * 100
+        volume = option.get("volume", 0)
+        open_interest = option.get("open_interest", 0)
+        bid = option["bid"] or 0
+        ask = option["ask"] or 0
+        mid_price = (bid + ask) / 2 if bid and ask else bid or ask
+
+        # Condiciones del contrato ganador
+        if (
+            0.4 <= abs(delta) <= 0.6 and
+            gamma > 0.01 and
+            mid_price > 0 and
+            volume > 500 and
+            open_interest > 1000 and
+            (iv / hv if hv > 0 else 1) <= iv_hv_ratio
+        ):
+            max_gain = ((current_price - strike) / mid_price * 100) if delta < 0 else ((strike - current_price) / mid_price * 100)
+            risk_reward = max_gain / mid_price if mid_price > 0 else 0
+
+            winning_contracts.append({
+                "Strike": strike,
+                "Type": "CALL" if delta > 0 else "PUT",
+                "Delta": round(delta, 4),
+                "Gamma": round(gamma, 4),
+                "Theta": round(theta, 4),
+                "IV": round(iv, 2),
+                "HV": round(hv, 2),
+                "Volume": volume,
+                "Open Interest": open_interest,
+                "Max Gain (%)": round(max_gain, 2),
+                "Risk-Reward Ratio": round(risk_reward, 2),
+                "Entry Price": round(mid_price, 2),
+            })
+
+    # Ordenar por el mayor Max Gain
+    winning_contracts = sorted(winning_contracts, key=lambda x: x["Max Gain (%)"], reverse=True)
+    return winning_contracts[:3]
+
+
+def display_support_resistance(support_resistance):
+    """
+    Muestra el soporte y resistencia calculados en tarjetas dinámicas.
+    """
+    st.subheader("")
+    for key, value in support_resistance.items():
+        card_color = "#d4f4dd" if "CALL" in key else "#f4d4d4"
+        border_color = "#28a745" if "CALL" in key else "#dc3545"
+
+        st.markdown(f"""
+            <div style="border: 2px solid {border_color}; border-radius: 10px; padding: 10px; margin-bottom: 10px; background-color: {card_color};">
+                <h4 style="color: black; margin-bottom: 5px;">{key}</h4>
+                <p style="color: black; margin: 5px 0;"><b>Strike:</b> {value['Strike']}</p>
+                <p style="color: black; margin: 5px 0;"><b>Gamma:</b> {value['Gamma']:.4f}</p>
+            </div>
+        """, unsafe_allow_html=True)
+
+
+def display_winning_contracts(winning_contracts):
+    """
+    Muestra los contratos ganadores en tarjetas dentro de Streamlit.
+    Las tarjetas serán verdes para CALLs y rojas para PUTs.
+    """
+    if not winning_contracts:
+        st.write("Wait Dude There are no Contracts Relax.")
+        return
+
+    st.subheader("High Performance Contracts")
+    for contract in winning_contracts:
+        # Determinar el color de la tarjeta según el tipo de contrato
+        card_color = "#d4f4dd" if contract['Type'] == "CALL" else "#f4d4d4"
+        border_color = "#28a745" if contract['Type'] == "CALL" else "#dc3545"
+
+        # Contenido dinámico de la tarjeta
+        st.markdown(f"""
+            <div style="border: 2px solid {border_color}; border-radius: 10px; padding: 15px; margin-bottom: 10px; background-color: {card_color};">
+                <h4 style="color: black; margin-bottom: 10px; font-size: 18px;">{contract['Type']} - Strike: {contract['Strike']}</h4>
+                <p style="color: black; margin: 5px 0;"><b>Delta:</b> {contract['Delta']} | <b>Gamma:</b> {contract['Gamma']} | <b>Theta:</b> {contract['Theta']}</p>
+                <p style="color: black; margin: 5px 0;"><b>IV:</b> {contract['IV']}% | <b>HV:</b> {contract['HV']}%</p>
+                <p style="color: black; margin: 5px 0;"><b>Volume:</b> {contract['Volume']} | <b>Open Interest:</b> {contract['Open Interest']}</p>
+                <p style="color: black; margin: 5px 0;"><b>Entry Price:</b> ${contract['Entry Price']} | <b>Max Gain:</b> {contract['Max Gain (%)']}% | <b>RR Ratio:</b> {contract['Risk-Reward Ratio']}</p>
+            </div>
+        """, unsafe_allow_html=True)
+
+
+# Llamar a las funciones y mostrar resultados en Streamlit
+support_resistance = calculate_support_resistance_gamma(processed_data, current_price, price_range=20)
+display_support_resistance(support_resistance)
+
+winning_options = generate_winning_contract(options_data, current_price)
+display_winning_contracts(winning_options)
+
+
+
+
+
+
+
+
+
+
+#>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+
+
+
 
