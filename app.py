@@ -1,30 +1,15 @@
-import streamlit as st
-import pandas as pd
-import requests
-from datetime import datetime
-import plotly.express as px
-import numpy as np
-import plotly.graph_objects as go
-import time
-import yfinance as yf
-import warnings
-import bcrypt
-import streamlit_authenticator as stauth
-import csv
-from bs4 import BeautifulSoup
-from datetime import datetime, timedelta
-import xgboost as xgb
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, classification_report
-import openai
-from dotenv import load_dotenv
+import streamlit as st  # Para la interfaz Streamlit
+import pandas as pd  # Para manipulación de datos tabulares
+import requests  # Para llamadas a la API Tradier
+import plotly.express as px  # Para gráficos interactivos sencillos
+import plotly.graph_objects as go  # Para gráficos avanzados
+from datetime import datetime, timedelta  # Para manejo de fechas
+import numpy as np  # Para cálculos matemáticos y manipulación de arrays
+
 
 
 # Configuración inicial de la página
-st.set_page_config(page_title="SCANNER OPTIONS", layout="wide")
+st.set_page_config(page_title="SCANNER ", layout="wide")
 
 # Configuración de la API Tradier
 API_KEY = "wMG8GrrZMBFeZMCWJTqTzZns7B4w"
@@ -169,9 +154,9 @@ def gamma_exposure_chart_optimized(processed_data, current_price, max_pain):
     )
 
     fig.update_layout(
-        title="Gamma Exposure (Calls vs Puts)",
+        title="(Calls vs Puts)",
         xaxis_title="Strike Price",
-        yaxis_title="Gamma Exposure",
+        yaxis_title="VOLUME E",
         template="plotly_white",
         legend=dict(title="Option Type"),
     )
@@ -204,8 +189,8 @@ def create_heatmap(processed_data):
     ))
 
     fig.update_layout(
-        title="Supports & Resistances (Heatmap)",
-        xaxis_title="Strike Price",
+        title="GEAR",
+        xaxis_title="GEAR",
         yaxis_title="Metrics",
         template="plotly_dark"
     )
@@ -270,9 +255,9 @@ def plot_skew_analysis_with_totals(options_data):
 
 
 # Interfaz de usuario
-st.title("SCANNER OPTIONS")
+st.title("SCANNER")
 
-ticker = st.text_input("Ticker", value="AAPL", key="ticker_input").upper()
+ticker = st.text_input("Ticker", value="SPY", key="ticker_input").upper()
 expiration_dates = get_expiration_dates(ticker)
 if expiration_dates:
     expiration_date = st.selectbox("Expiration Date", expiration_dates, key="expiration_date")
@@ -321,7 +306,7 @@ st.plotly_chart(heatmap_fig, use_container_width=True)
 
 
 
-st.subheader("Skew Analysis")
+st.subheader("Options")
 
 # Llamar a la función mejorada
 skew_fig, total_calls, total_puts = plot_skew_analysis_with_totals(options_data)
@@ -335,64 +320,27 @@ st.plotly_chart(skew_fig, use_container_width=True)
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # Función para generar señales en formato de tarjetas
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -401,7 +349,7 @@ st.plotly_chart(skew_fig, use_container_width=True)
 #########################################################################
 
 
-def calculate_support_resistance_gamma(processed_data, current_price, price_range=20):
+def calculate_support_resistance_gamma(processed_data, current_price, price_range=21):
     """
     Calcula el soporte y la resistencia basados en el Gamma más alto dentro de un rango dado.
     """
@@ -553,9 +501,677 @@ display_winning_contracts(winning_options)
 
 
 
+
 #>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
 
 
+
+
+
+
+
+def calculate_iron_condor(processed_data, current_price, step=5):
+    """
+    Calcula los strikes, primas, puntos de equilibrio y rango de beneficio para un Iron Condor.
+    """
+    # Identificar el Gamma más alto para CALLs y PUTs
+    max_gamma_call = max(
+        (processed_data[strike]["CALL"]["Gamma"], strike)
+        for strike in processed_data if "CALL" in processed_data[strike]
+    )
+    max_gamma_put = max(
+        (processed_data[strike]["PUT"]["Gamma"], strike)
+        for strike in processed_data if "PUT" in processed_data[strike]
+    )
+
+    # Strikes óptimos para vender
+    strike_call_sell = max_gamma_call[1]
+    strike_put_sell = max_gamma_put[1]
+
+    # Strikes para las posiciones compradas
+    strike_call_buy = strike_call_sell + step
+    strike_put_buy = strike_put_sell - step
+
+    # Primas para cada posición (usando Gamma * OI como aproximación)
+    premium_call_sell = processed_data[strike_call_sell]["CALL"]["OI"] * processed_data[strike_call_sell]["CALL"]["Gamma"]
+    premium_call_buy = processed_data.get(strike_call_buy, {}).get("CALL", {}).get("OI", 0) * processed_data.get(strike_call_buy, {}).get("CALL", {}).get("Gamma", 0)
+
+    premium_put_sell = processed_data[strike_put_sell]["PUT"]["OI"] * processed_data[strike_put_sell]["PUT"]["Gamma"]
+    premium_put_buy = processed_data.get(strike_put_buy, {}).get("PUT", {}).get("OI", 0) * processed_data.get(strike_put_buy, {}).get("Gamma", 0)
+
+    # Cálculo de los puntos de equilibrio
+    breakeven_call = strike_call_sell + (premium_call_sell - premium_call_buy)
+    breakeven_put = strike_put_sell - (premium_put_sell - premium_put_buy)
+
+    # Rango de beneficio
+    max_profit_range = (breakeven_put, breakeven_call)
+
+    return {
+        "Sell Call Strike": strike_call_sell,
+        "Buy Call Strike": strike_call_buy,
+        "Sell Put Strike": strike_put_sell,
+        "Buy Put Strike": strike_put_buy,
+        "Breakeven Call": breakeven_call,
+        "Breakeven Put": breakeven_put,
+        "Max Profit Range": max_profit_range,
+        "Premiums": {
+            "Call Sell": premium_call_sell,
+            "Call Buy": premium_call_buy,
+            "Put Sell": premium_put_sell,
+            "Put Buy": premium_put_buy,
+        }
+    }
+
+
+# Calcular el Iron Condor
+iron_condor = calculate_iron_condor(processed_data, current_price)
+
+# Presentar resultados en tarjetas dinámicas
+st.subheader("Analysis")
+
+# Color personalizado
+text_color = "black"  # Cambia a "black", "yellow", o cualquier color CSS válido
+
+# Tarjeta para las posiciones CALL
+st.markdown(f"""
+    <div style="border: 2px solid #007bff; border-radius: 10px; padding: 15px; margin-bottom: 10px; background-color: #e6f7ff;">
+        <h3 style="color: #0056b3;">CALLs</h3>
+        <p style="color: {text_color};"><b>Sell Call Strike:</b> {iron_condor['Sell Call Strike']}</p>
+        <p style="color: {text_color};"><b>Buy Call Strike:</b> {iron_condor['Buy Call Strike']}</p>
+        <p style="color: {text_color};"><b>Breakeven Call:</b> {iron_condor['Breakeven Call']:.2f}</p>
+        <p style="color: {text_color};"><b>Premium (Sell Call):</b> ${iron_condor['Premiums']['Call Sell']:.2f}</p>
+        <p style="color: {text_color};"><b>Premium (Buy Call):</b> ${iron_condor['Premiums']['Call Buy']:.2f}</p>
+    </div>
+""", unsafe_allow_html=True)
+
+# Tarjeta para las posiciones PUT
+st.markdown(f"""
+    <div style="border: 2px solid #dc3545; border-radius: 10px; padding: 15px; margin-bottom: 10px; background-color: #f8d7da;">
+        <h3 style="color: #8b0000;">PUTs</h3>
+        <p style="color: {text_color};"><b>Sell Put Strike:</b> {iron_condor['Sell Put Strike']}</p>
+        <p style="color: {text_color};"><b>Buy Put Strike:</b> {iron_condor['Buy Put Strike']}</p>
+        <p style="color: {text_color};"><b>Breakeven Put:</b> {iron_condor['Breakeven Put']:.2f}</p>
+        <p style="color: {text_color};"><b>Premium (Sell Put):</b> ${iron_condor['Premiums']['Put Sell']:.2f}</p>
+        <p style="color: {text_color};"><b>Premium (Buy Put):</b> ${iron_condor['Premiums']['Put Buy']:.2f}</p>
+    </div>
+""", unsafe_allow_html=True)
+
+# Tarjeta para el rango de beneficio máximo
+st.markdown(f"""
+    <div style="border: 2px solid #28a745; border-radius: 10px; padding: 15px; margin-bottom: 10px; background-color: #d4edda;">
+        <h3 style="color: #155724;">Range</h3>
+        <p style="color: {text_color};"><b>Desde:</b> {iron_condor['Max Profit Range'][0]:.2f}</p>
+        <p style="color: {text_color};"><b>Hasta:</b> {iron_condor['Max Profit Range'][1]:.2f}</p>
+    </div>
+""", unsafe_allow_html=True)
+
+
+################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Obtener el precio actual
+current_price = get_current_price(ticker)
+
+# Mostrar el precio actual en la interfaz para debugging
+st.write(f"**Current Price:** ${current_price:.2f}")
+
+# Verificar si el precio es válido
+if current_price == 0:
+    st.error("Error: Could not retrieve current price. Please check your API or the ticker symbol.")
+    st.stop()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def detect_synthetic_trigger(processed_data, current_price, threshold_percentage=10):
+    """
+    Detecta un "sintético" cuando el precio rompe un alto volumen de Gamma PUT o CALL.
+    Asegura que el tipo de contrato esté correctamente asociado.
+    """
+    # Identificar el strike con el mayor volumen de Gamma para CALL y PUT
+    max_gamma_call = max(
+        (processed_data[strike]["CALL"]["Gamma"] * processed_data[strike]["CALL"]["OI"], strike)
+        for strike in processed_data if "CALL" in processed_data[strike]
+    )
+    max_gamma_put = max(
+        (processed_data[strike]["PUT"]["Gamma"] * processed_data[strike]["PUT"]["OI"], strike)
+        for strike in processed_data if "PUT" in processed_data[strike]
+    )
+
+    # Definir los niveles de ruptura
+    gamma_call_level = max_gamma_call[1]
+    gamma_put_level = max_gamma_put[1]
+    call_threshold_up = gamma_call_level * (1 + threshold_percentage / 100)
+    put_threshold_up = gamma_put_level * (1 + threshold_percentage / 100)
+
+    # Inicializar los triggers
+    synthetic_trigger = None
+
+    # Verificar ruptura en CALLs
+    if current_price > call_threshold_up:  # Ruptura hacia arriba en CALLs
+        next_targets = sorted(
+            [(processed_data[strike]["CALL"]["Gamma"] * processed_data[strike]["CALL"]["OI"], strike)
+             for strike in processed_data if strike > gamma_call_level and "CALL" in processed_data[strike]],
+            reverse=True
+        )[:3]
+        next_targets = [strike for _, strike in next_targets]
+        synthetic_trigger = {
+            "type": "CALL",
+            "triggered_level": gamma_call_level,
+            "next_targets": next_targets,
+            "direction": "UP"
+        }
+
+    # Verificar ruptura en PUTs
+    elif current_price > put_threshold_up:  # Ruptura hacia arriba en PUTs
+        next_targets = sorted(
+            [(processed_data[strike]["PUT"]["Gamma"] * processed_data[strike]["PUT"]["OI"], strike)
+             for strike in processed_data if strike > gamma_put_level and "PUT" in processed_data[strike]],
+            reverse=True
+        )[:3]
+        next_targets = [strike for _, strike in next_targets]
+        synthetic_trigger = {
+            "type": "PUT",
+            "triggered_level": gamma_put_level,
+            "next_targets": next_targets,
+            "direction": "UP"
+        }
+
+    # Si no hay ruptura, mostrar los siguientes targets relevantes
+    if synthetic_trigger is None:
+        next_call_target = min(
+            strike for strike in processed_data if strike > current_price and "CALL" in processed_data[strike]
+        )
+        next_put_target = max(
+            strike for strike in processed_data if strike < current_price and "PUT" in processed_data[strike]
+        )
+        synthetic_trigger = {
+            "type": "NO TRIGGER",
+            "next_call_target": next_call_target,
+            "next_put_target": next_put_target,
+        }
+
+    return synthetic_trigger
+
+# Detectar el sintético
+synthetic_trigger = detect_synthetic_trigger(processed_data, current_price, threshold_percentage=11)
+
+# Mostrar resultados
+if synthetic_trigger["type"] == "NO TRIGGER":
+    st.markdown(f"""
+        <div style="border: 2px solid #ffc107; border-radius: 10px; padding: 15px; margin-bottom: 10px; background-color: #fff3cd;">
+            <h3 style="color: black;">Direction</h3>
+            <p style="color: black;">Current price: ${current_price:.2f}</p>
+            <p style="color: black;"><b>Next CALL Target:</b> {synthetic_trigger['next_call_target']}</p>
+            <p style="color: black;"><b>Next PUT Target:</b> {synthetic_trigger['next_put_target']}</p>
+        </div>
+    """, unsafe_allow_html=True)
+else:
+    next_targets = ", ".join(map(str, synthetic_trigger['next_targets']))
+    st.markdown(f"""
+        <div style="border: 2px solid #ffc107; border-radius: 10px; padding: 15px; margin-bottom: 10px; background-color: #fff3cd;">
+            <h3 style="color: black;">Synthetic Trigger Detected</h3>
+            <p style="color: black;"><b>Type:</b> {synthetic_trigger['type']}</p>
+            <p style="color: black;"><b>Triggered Level:</b> {synthetic_trigger['triggered_level']}</p>
+            <p style="color: black;"><b>Direction:</b> {synthetic_trigger['direction']}</p>
+            <p style="color: black;"><b>Next Targets:</b> {next_targets}</p>
+        </div>
+    """, unsafe_allow_html=True)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def detect_and_update_targets(processed_data, current_price, threshold_percentage=10):
+    """
+    Detect and dynamically update Maximum and Bottom Targets if they are broken.
+    """
+    # Identificar los strikes con el Gamma más alto
+    max_gamma_call = max(
+        (processed_data[strike]["CALL"]["Gamma"] * processed_data[strike]["CALL"]["OI"], strike)
+        for strike in processed_data if "CALL" in processed_data[strike]
+    )
+    max_gamma_put = max(
+        (processed_data[strike]["PUT"]["Gamma"] * processed_data[strike]["PUT"]["OI"], strike)
+        for strike in processed_data if "PUT" in processed_data[strike]
+    )
+
+    # Extraer strikes iniciales
+    strike_call = max_gamma_call[1]
+    strike_put = max_gamma_put[1]
+
+    # Si rompe el máximo
+    if current_price > strike_call * (1 + threshold_percentage / 100):
+        # Buscar el siguiente nivel CALL
+        next_call_targets = sorted(
+            [(processed_data[s]["CALL"]["Gamma"] * processed_data[s]["CALL"]["OI"], s)
+             for s in processed_data if s > strike_call and "CALL" in processed_data[s]],
+            reverse=True
+        )
+        strike_call = next_call_targets[0][1] if next_call_targets else strike_call  # Actualizar si hay otro nivel
+
+    # Si rompe el mínimo
+    if current_price < strike_put * (1 - threshold_percentage / 100):
+        # Buscar el siguiente nivel PUT
+        next_put_targets = sorted(
+            [(processed_data[s]["PUT"]["Gamma"] * processed_data[s]["PUT"]["OI"], s)
+             for s in processed_data if s < strike_put and "PUT" in processed_data[s]],
+            reverse=True
+        )
+        strike_put = next_put_targets[0][1] if next_put_targets else strike_put  # Actualizar si hay otro nivel
+
+    return {
+        "Current Price": current_price,
+        "Maximum Target Today": strike_call,
+        "Bottom Target Today": strike_put,
+        "Next CALL Target": round(strike_call, 2),
+        "Next PUT Target": round(strike_put, 2),
+    }
+
+
+# Calcular y actualizar dinámicamente los targets
+updated_targets = detect_and_update_targets(processed_data, current_price)
+
+# Mostrar resultados
+st.subheader("Target Updates")
+st.markdown(f"""
+    <div style="border: 2px solid #007bff; border-radius: 10px; padding: 15px; margin-bottom: 10px; background-color: #e6f7ff;">
+        <h3 style="color: #0056b3;">TODAY TARGETS</h3>
+        <p style="color: black;"><b>Current Price:</b> ${updated_targets['Current Price']:.2f}</p>
+        <p style="color: black;"><b>Maximum Target Today:</b> ${updated_targets['Maximum Target Today']}</p>
+        <p style="color: black;"><b>Bottom Target Today:</b> ${updated_targets['Bottom Target Today']}</p>
+    </div>
+""", unsafe_allow_html=True)
+
+# Mostrar los siguientes targets dinámicos
+st.markdown(f"""
+    <div style="border: 2px solid #28a745; border-radius: 10px; padding: 15px; margin-bottom: 10px; background-color: #d4edda;">
+        <h3 style="color: #155724;">Break the Targets</h3>
+        <p style="color: black;"><b>Next CALL Target:</b> ${updated_targets['Next CALL Target']}</p>
+        <p style="color: black;"><b>Next PUT Target:</b> ${updated_targets['Next PUT Target']}</p>
+    </div>
+""", unsafe_allow_html=True)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+
+
+
+
+
+
+
+
+
+# Función para calcular zonas clave
+def calculate_key_levels(options_data):
+    key_levels = {"CALL": [], "PUT": []}
+    for option in options_data:
+        strike = option["strike"]
+        gamma = option.get("greeks", {}).get("gamma", 0)
+        delta = option.get("greeks", {}).get("delta", 0)
+        oi = option.get("open_interest", 0)
+
+        if option["option_type"].upper() == "CALL":
+            key_levels["CALL"].append((strike, gamma, delta, oi))
+        elif option["option_type"].upper() == "PUT":
+            key_levels["PUT"].append((strike, gamma, delta, oi))
+
+    # Ordenar por Open Interest y seleccionar los 3 niveles más relevantes
+    for key in key_levels:
+        key_levels[key] = sorted(key_levels[key], key=lambda x: x[3], reverse=True)[:3]
+
+    return key_levels
+
+# Función para verificar alertas dinámicas
+def check_alerts(current_price, key_levels):
+    alerts = []
+    for option_type, levels in key_levels.items():
+        for strike, gamma, delta, oi in levels:
+            if abs(current_price - strike) <= 1:  # A menos de 1 punto del strike
+                alerts.append(f"{option_type} Strike {strike} is being approached! (Gamma: {gamma}, OI: {oi})")
+    return alerts
+
+# Interfaz de usuario
+
+
+
+current_price = get_current_price(ticker)
+options_data = get_options_data(ticker, expiration_date)
+
+if not options_data:
+    st.error("No options data available.")
+    st.stop()
+
+# Calcular niveles clave y alertas
+key_levels = calculate_key_levels(options_data)
+alerts = check_alerts(current_price, key_levels)
+
+# Mostrar resultados
+st.subheader("Current Price")
+st.markdown(f"**${current_price:.2f}**")
+
+st.subheader("Key Levels")
+for option_type, levels in key_levels.items():
+    st.markdown(f"### {option_type}")
+    for strike, gamma, delta, oi in levels:
+        st.markdown(f"- **Strike:** {strike}, **Gamma:** {gamma:.4f}, **Delta:** {delta:.4f}, **OI:** {oi}")
+
+st.subheader("Intraday ")
+if alerts:
+    for alert in alerts:
+        st.markdown(f"🚨 {alert}")
+else:
+    st.markdown("No alerts at the moment.")
+
+# Visualización de Gamma y OI
+def plot_gamma_oi(key_levels):
+    strikes = []
+    gammas = []
+    open_interests = []
+    option_types = []
+
+    for option_type, levels in key_levels.items():
+        for strike, gamma, _, oi in levels:
+            strikes.append(strike)
+            gammas.append(gamma)
+            open_interests.append(oi)
+            option_types.append(option_type)
+
+    df = pd.DataFrame({"Strike": strikes, "Gamma": gammas, "OI": open_interests, "Type": option_types})
+    fig = px.scatter(df, x="Strike", y="Gamma", size="OI", color="Type", title="Executed Strike")
+    return fig
+
+st.plotly_chart(plot_gamma_oi(key_levels), use_container_width=True)
+
+
+
+
+
+
+
+
+
+############################################################################################
+
+
+
+
+
+
+
+
+
+
+all_tickers = [
+    # 100 Tickers de NASDAQ
+    "AAPL", "MSFT", "NVDA", "GOOG", "AMZN", "META", "TSLA", "ADBE", "INTC", "NFLX",
+    "QCOM", "CSCO", "AMD", "PYPL", "AVGO", "AMAT", "TXN", "MRVL", "INTU", "SHOP",
+    "JD", "ZM", "DOCU", "CRWD", "SNOW", "ZS", "PANW", "SPLK", "MDB", "OKTA",
+    "ROKU", "ALGN", "ADSK", "DXCM", "TEAM", "PDD", "MELI", "BIDU", "BABA", "NTES",
+    "ATVI", "EA", "ILMN", "EXPE", "SIRI", "KLAC", "LRCX", "ASML", "SWKS", "XLNX",
+    "WDAY", "TTWO", "VRTX", "REGN", "BIIB", "SGEN", "MAR", "CTSH", "FISV", "MTCH",
+    "TTD", "SPLK", "PTON", "DOCS", "UPST", "HIMS", "CRSP", "NVCR", "EXAS", "ARKK",
+    "ZS", "TWLO", "U", "HUBS", "VIX", "BILL", "ZI", "GTLB", "NET", "FVRR",
+    "TTD", "COIN", "RBLX", "DKNG", "SPOT", "SNAP", "PINS", "MTCH", "LYFT", "GRPN",
+
+    # 100 Tickers de NYSE
+    "BRK.B", "JNJ", "V", "PG", "JPM", "HD", "DIS", "MA", "UNH", "PFE", "KO", "PEP",
+    "BAC", "WMT", "XOM", "CVX", "ABT", "TMO", "MRK", "MCD", "CAT", "GS", "MMM",
+    "RTX", "IBM", "DOW", "GE", "BA", "LMT", "FDX", "T", "VZ", "NKE", "AXP", "ORCL",
+    "CSX", "USB", "SPG", "AMT", "PLD", "CCI", "PSA", "CB", "BK", "SCHW", "TFC", "SO",
+    "D", "DUK", "NEE", "EXC", "SRE", "AEP", "EIX", "PPL", "PEG", "FE", "AEE", "AES",
+    "ETR", "XEL", "AWK", "WEC", "ED", "ES", "CNP", "CMS", "DTE", "EQT", "OGE",
+    "OKE", "SWX", "WMB", "APA", "DVN", "FANG", "MRO", "PXD", "HAL", "SLB", "COP",
+    "CVX", "XOM", "PSX", "MPC", "VLO", "HES", "OXY", "EOG", "KMI", "WES","DJT","BITX","SMCI","ENPH",
+
+    # 100 Tickers de Russell
+    "PLTR", "ROKU", "SQ", "AFRM", "UPST", "FVRR", "ETSY", "NET", "DDOG", "TWLO",
+    "U", "HUBS", "DOCN", "GTLB", "SMAR", "PATH", "COUP", "ASAN", "RBLX", "DKNG",
+    "BILL", "ZI", "TTD", "CRSP", "NVCR", "EXAS", "ARKK", "MTCH", "LYFT", "GRPN",
+    "BB", "CLF", "FUBO", "CLOV", "NNDM", "SKLZ", "SPCE", "SNDL", "WKHS", "GME",
+    "AMC", "BBBY", "APRN", "SPWR", "RUN", "FCEL", "PLUG", "SOLO", "KNDI", "XPEV",
+    "LI", "NIO", "RIDE", "NKLA", "QS", "LCID", "FSR", "PSNY", "GOEV", "WKHS",
+    "VRM", "BABA", "JD", "PDD", "BIDU", "TCEHY", "NTES", "IQ", "HUYA", "DOYU",
+    "EDU", "TAL", "ZH", "DIDI", "YMM", "BILI", "PDD", "LU", "QD", "FINV",
+    "OCGN", "NVTA", "CRSP", "BEAM", "EDIT", "NTLA", "PACB", "TWST", "FLGT", "FATE"
+]
+
+# Función para obtener datos de múltiples tickers
+@st.cache_data
+def fetch_batch_stock_data(tickers):
+    tickers_str = ",".join(tickers)
+    url = f"{BASE_URL}/markets/quotes"
+    headers = {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
+    params = {"symbols": tickers_str}
+
+    response = requests.get(url, headers=headers, params=params)
+    if response.status_code == 200:
+        data = response.json().get("quotes", {}).get("quote", [])
+        if isinstance(data, dict):
+            data = [data]
+        return [
+            {
+                "Ticker": item.get("symbol", ""),
+                "Price": item.get("last", 0),
+                "Change (%)": item.get("change_percentage", 0),
+                "Volume": item.get("volume", 0),
+                "Average Volume": item.get("average_volume", 1),
+                "IV": item.get("implied_volatility", None),
+                "HV": item.get("historical_volatility", None),
+                "Previous Close": item.get("prev_close", 0)
+            }
+            for item in data
+        ]
+    else:
+        st.error(f"Error al obtener datos: {response.status_code}")
+        return []
+
+# Función para calcular top movers básicos
+def calculate_top_movers(data):
+    df = pd.DataFrame(data)
+    if df.empty:
+        return pd.DataFrame()
+
+    df["IV"] = df["IV"].fillna(0).infer_objects(copy=False)
+    df["Average Volume"] = df["Average Volume"].replace(0, np.nan)
+    df["Volumen Relativo"] = df["Volume"] / df["Average Volume"]
+    df["Cambio Relativo"] = np.abs(df["Change (%)"]) / df["Change (%)"].mean()
+
+    df["Score"] = (df["Volumen Relativo"] * 4) + (df["Cambio Relativo"] * 3) + df["IV"]
+
+    return df.sort_values("Score", ascending=False).head(3)
+
+# Función para detectar movimientos continuos
+def calculate_continuous_movers(data):
+    df = pd.DataFrame(data)
+    if df.empty:
+        return pd.DataFrame()
+
+    df["IV"] = df["IV"].fillna(0).infer_objects(copy=False)
+    df["HV"] = df["HV"].fillna(0).infer_objects(copy=False)
+    df["Average Volume"] = df["Average Volume"].replace(0, np.nan)
+
+    df["Volumen Relativo"] = df["Volume"] / df["Average Volume"]
+    df["Momentum"] = np.abs(df["Price"] - df["Previous Close"]) / df["Previous Close"]
+    df["Cambio Relativo"] = np.abs(df["Change (%)"]) / df["Change (%)"].mean()
+
+    df["Score"] = (df["Volumen Relativo"] * 4) + (df["Momentum"] * 3) + (df["Cambio Relativo"] * 2) + (df["IV"] + df["HV"])
+
+    return df.sort_values("Score", ascending=False).head(3)
+
+# Función para calcular potencial explosivo
+def calculate_explosive_movers(data):
+    df = pd.DataFrame(data)
+    if df.empty:
+        return pd.DataFrame()
+
+    df["IV"] = df["IV"].fillna(0).infer_objects(copy=False)
+    df["HV"] = df["HV"].fillna(0).infer_objects(copy=False)
+    df["Average Volume"] = df["Average Volume"].replace(0, np.nan)
+
+    df["Volumen Relativo"] = df["Volume"] / df["Average Volume"]
+    df["Explosión"] = df["Volumen Relativo"] * df["Change (%)"].abs()
+    df["Score"] = df["Explosión"] + (df["IV"] * 0.5)
+
+    return df.sort_values("Score", ascending=False).head(3)
+
+
+
+
+# Función para calcular actividad de opciones
+def calculate_options_activity(data):
+    df = pd.DataFrame(data)
+    if df.empty:
+        return pd.DataFrame()
+
+    df["IV"] = df["IV"].fillna(0).astype(float)
+    df["Volumen Relativo"] = df["Volume"] / df["Average Volume"]
+    df["Options Activity"] = df["Volumen Relativo"] * df["IV"]
+
+    return df.sort_values("Options Activity", ascending=False).head(3)
+
+
+# Interfaz de usuario
+st.title("")
+
+
+
+stock_data = fetch_batch_stock_data(all_tickers)
+
+if stock_data:
+    # Versión 1: Básico
+    st.subheader("Top Movers")
+    top_movers = calculate_top_movers(stock_data)
+    for _, row in top_movers.iterrows():
+        st.markdown(f"""
+            <div style="border: 2px solid #28a745; padding: 10px; margin-bottom: 10px;">
+                <h3>{row['Ticker']}</h3>
+                <p><b>Precio:</b> ${row['Price']:.2f}</p>
+                <p><b>Cambio (%):</b> {row['Change (%)']:.2f}%</p>
+                <p><b>Volumen Relativo:</b> {row['Volumen Relativo']:.2f}</p>
+                <p><b>Puntaje:</b> {row['Score']:.2f}</p>
+            </div>
+        """, unsafe_allow_html=True)
+
+    # Versión 2: Movimientos Continuos
+    st.subheader("")
+    continuous_movers = calculate_continuous_movers(stock_data)
+    for _, row in continuous_movers.iterrows():
+        st.markdown(f"""
+            <div style="border: 2px solid #ff4500; padding: 10px; margin-bottom: 10px;">
+                <h3>{row['Ticker']}</h3>
+                <p><b>Precio:</b> ${row['Price']:.2f}</p>
+                <p><b>Momentum:</b> {row['Momentum']:.2f}</p>
+                <p><b>Puntaje:</b> {row['Score']:.2f}</p>
+            </div>
+        """, unsafe_allow_html=True)
+
+    # Versión 3: Explosión
+    st.subheader("")
+    explosive_movers = calculate_explosive_movers(stock_data)
+    for _, row in explosive_movers.iterrows():
+        st.markdown(f"""
+            <div style="border: 2px solid #0000FF; padding: 10px; margin-bottom: 10px;">
+                <h3>{row['Ticker']}</h3>
+                <p><b>Precio:</b> ${row['Price']:.2f}</p>
+                <p><b>Explosión:</b> {row['Explosión']:.2f}</p>
+                <p><b>Puntaje:</b> {row['Score']:.2f}</p>
+            </div>
+        """, unsafe_allow_html=True)
+else:
+    st.warning("No se encontraron datos para los tickers ingresados.")
+
+
+
+
+
+
+# Nueva Sección: Actividad de Opciones
+    st.subheader("Actividad de Opciones")
+    options_activity = calculate_options_activity(stock_data)
+    for _, row in options_activity.iterrows():
+        st.markdown(f"""
+            <div style="border: 2px solid #0000FF; padding: 10px; margin-bottom: 10px;">
+                <h3>{row['Ticker']}</h3>
+                <p><b>Precio:</b> ${row['Price']:.2f}</p>
+                <p><b>Volumen Relativo:</b> {row['Volumen Relativo']:.2f}</p>
+                <p><b>Actividad de Opciones:</b> {row['Options Activity']:.2f}</p>
+            </div>
+        """, unsafe_allow_html=True)
+
+
+    else:
+     st.warning("No se encontraron datos para los tickers ingresados.")
+
+
+    ####################################################################### 
 
 
